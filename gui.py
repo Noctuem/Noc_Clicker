@@ -4,10 +4,66 @@ from tkinter import ttk
 import mss
 from PIL import Image, ImageTk
 
-from region_selector import RegionSelector, ClickPositionSelector
+from region_selector import RegionSelector
 from monitor import ScreenMonitor
 
 THUMB_SIZE = (160, 120)
+MARKER_SIZE = 40
+
+
+class ClickMarker:
+    """A small draggable on-screen crosshair showing where the auto-click will land."""
+
+    def __init__(self, root):
+        self.window = tk.Toplevel(root)
+        self.window.overrideredirect(True)
+        self.window.attributes("-topmost", True)
+        self.window.attributes("-transparentcolor", "white")
+
+        self.canvas = tk.Canvas(
+            self.window, width=MARKER_SIZE, height=MARKER_SIZE,
+            bg="white", highlightthickness=0, cursor="fleur"
+        )
+        self.canvas.pack()
+
+        # Draw crosshair with circle
+        mid = MARKER_SIZE // 2
+        self.canvas.create_line(0, mid, MARKER_SIZE, mid, fill="red", width=2)
+        self.canvas.create_line(mid, 0, mid, MARKER_SIZE, fill="red", width=2)
+        self.canvas.create_oval(mid - 10, mid - 10, mid + 10, mid + 10,
+                                outline="red", width=2)
+        self.canvas.create_oval(mid - 2, mid - 2, mid + 2, mid + 2,
+                                fill="red", outline="red")
+
+        # Dragging state
+        self._drag_x = 0
+        self._drag_y = 0
+        self.canvas.bind("<ButtonPress-1>", self._on_press)
+        self.canvas.bind("<B1-Motion>", self._on_drag)
+
+        # Start hidden
+        self.window.withdraw()
+
+    def _on_press(self, event):
+        self._drag_x = event.x
+        self._drag_y = event.y
+
+    def _on_drag(self, event):
+        x = self.window.winfo_x() + (event.x - self._drag_x)
+        y = self.window.winfo_y() + (event.y - self._drag_y)
+        self.window.geometry(f"+{x}+{y}")
+
+    def get_position(self):
+        """Return the center of the marker in screen coordinates."""
+        x = self.window.winfo_x() + MARKER_SIZE // 2
+        y = self.window.winfo_y() + MARKER_SIZE // 2
+        return (x, y)
+
+    def show(self):
+        self.window.deiconify()
+
+    def hide(self):
+        self.window.withdraw()
 
 
 class App:
@@ -17,7 +73,6 @@ class App:
         self.root.resizable(False, False)
 
         self.bbox = None
-        self.click_pos = None
         self.control_image = None
         self.trigger_image = None
         self.monitor = None
@@ -25,6 +80,8 @@ class App:
         # Keep references to PhotoImage objects so they aren't garbage-collected
         self._control_photo = None
         self._trigger_photo = None
+
+        self.click_marker = ClickMarker(root)
 
         self._build_ui()
 
@@ -47,12 +104,6 @@ class App:
         )
         self.btn_trigger.pack(fill=tk.X, **pad)
 
-        self.btn_click_pos = ttk.Button(
-            btn_frame, text="Set Click Position", state=tk.DISABLED,
-            command=self._select_click_pos
-        )
-        self.btn_click_pos.pack(fill=tk.X, **pad)
-
         # --- Threshold slider ---
         slider_frame = ttk.Frame(self.root)
         slider_frame.pack(fill=tk.X, **pad)
@@ -67,19 +118,15 @@ class App:
         self.threshold_label.pack(side=tk.LEFT, padx=(4, 0))
         self.threshold_var.trace_add("write", self._update_threshold_label)
 
-        # --- Cooldown slider ---
+        # --- Cooldown input ---
         cooldown_frame = ttk.Frame(self.root)
         cooldown_frame.pack(fill=tk.X, **pad)
         ttk.Label(cooldown_frame, text="Cooldown (sec):").pack(side=tk.LEFT)
-        self.cooldown_var = tk.DoubleVar(value=1.0)
-        self.cooldown_slider = ttk.Scale(
-            cooldown_frame, from_=0.1, to=10.0, variable=self.cooldown_var,
-            orient=tk.HORIZONTAL
+        self.cooldown_var = tk.StringVar(value="1.0")
+        self.cooldown_entry = ttk.Entry(
+            cooldown_frame, textvariable=self.cooldown_var, width=8
         )
-        self.cooldown_slider.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 0))
-        self.cooldown_label = ttk.Label(cooldown_frame, text="1.0s")
-        self.cooldown_label.pack(side=tk.LEFT, padx=(4, 0))
-        self.cooldown_var.trace_add("write", self._update_cooldown_label)
+        self.cooldown_entry.pack(side=tk.LEFT, padx=(4, 0))
 
         # --- Start / Stop ---
         self.btn_toggle = ttk.Button(
@@ -110,10 +157,15 @@ class App:
     def _update_threshold_label(self, *_args):
         self.threshold_label.config(text=f"{self.threshold_var.get()}%")
 
-    def _update_cooldown_label(self, *_args):
-        self.cooldown_label.config(text=f"{self.cooldown_var.get():.1f}s")
+    def _get_cooldown(self):
+        try:
+            val = float(self.cooldown_var.get())
+            return max(0.0, val)
+        except ValueError:
+            return 1.0
 
     def _select_control(self):
+        self.click_marker.hide()
         self.root.withdraw()
         # Small delay so the main window has time to hide
         self.root.after(200, self._open_selector)
@@ -138,24 +190,15 @@ class App:
             return
         self.trigger_image = self._capture_region(self.bbox)
         self._show_preview(self.trigger_image, "trigger")
-        self.btn_click_pos.config(state=tk.NORMAL)
-        self.status_var.set("Trigger captured. Now set the click position.")
-
-    def _select_click_pos(self):
-        self.root.withdraw()
-        self.root.after(200, self._open_click_selector)
-
-    def _open_click_selector(self):
-        ClickPositionSelector(on_select=self._on_click_pos_selected)
-
-    def _on_click_pos_selected(self, pos):
-        self.root.deiconify()
-        if pos is None:
-            self.status_var.set("Click position selection cancelled.")
-            return
-        self.click_pos = pos
         self.btn_toggle.config(state=tk.NORMAL)
-        self.status_var.set(f"Click position set at ({pos[0]}, {pos[1]}). Ready to start.")
+
+        # Show the draggable click marker
+        x, y, w, h = self.bbox
+        self.click_marker.window.geometry(
+            f"+{x + w // 2 - MARKER_SIZE // 2}+{y + h // 2 - MARKER_SIZE // 2}"
+        )
+        self.click_marker.show()
+        self.status_var.set("Trigger captured. Drag the crosshair to the click target.")
 
     def _capture_region(self, bbox):
         x, y, w, h = bbox
@@ -180,20 +223,22 @@ class App:
             self.btn_toggle.config(text="Start")
             self.btn_control.config(state=tk.NORMAL)
             self.btn_trigger.config(state=tk.NORMAL)
-            self.btn_click_pos.config(state=tk.NORMAL)
+            self.click_marker.show()
             self.status_var.set("Stopped.")
         else:
             self._start_monitor()
 
     def _start_monitor(self):
-        if self.bbox is None or self.trigger_image is None or self.click_pos is None:
+        if self.bbox is None or self.trigger_image is None:
             return
+        click_pos = self.click_marker.get_position()
+        self.click_marker.hide()
         threshold = self.threshold_var.get() / 100.0
-        cooldown = self.cooldown_var.get()
+        cooldown = self._get_cooldown()
         self.monitor = ScreenMonitor(
             bbox=self.bbox,
             trigger_image=self.trigger_image,
-            click_pos=self.click_pos,
+            click_pos=click_pos,
             threshold=threshold,
             cooldown=cooldown,
             on_status=self._on_monitor_status,
@@ -202,7 +247,6 @@ class App:
         self.btn_toggle.config(text="Stop")
         self.btn_control.config(state=tk.DISABLED)
         self.btn_trigger.config(state=tk.DISABLED)
-        self.btn_click_pos.config(state=tk.DISABLED)
 
     def _on_monitor_status(self, msg):
         # Called from the monitor thread — schedule on the main thread

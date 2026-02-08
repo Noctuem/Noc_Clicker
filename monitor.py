@@ -1,11 +1,34 @@
+import ctypes
 import threading
 import time
 
 import mss
-import pyautogui
 from PIL import Image
 
 import image_compare
+
+# Win32 constants
+MOUSEEVENTF_LEFTDOWN = 0x0002
+MOUSEEVENTF_LEFTUP = 0x0004
+
+
+class POINT(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+
+def _get_cursor_pos():
+    pt = POINT()
+    ctypes.windll.user32.GetCursorPos(ctypes.byref(pt))
+    return pt.x, pt.y
+
+
+def _set_cursor_pos(x, y):
+    ctypes.windll.user32.SetCursorPos(x, y)
+
+
+def _left_click():
+    ctypes.windll.user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+    ctypes.windll.user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
 
 
 class ScreenMonitor:
@@ -17,7 +40,7 @@ class ScreenMonitor:
         Args:
             bbox: (x, y, width, height) absolute screen coordinates.
             trigger_image: PIL Image of the trigger state.
-            click_pos: (x, y) absolute screen coordinates to click.
+            click_pos: (x, y) screen coordinates to click (from tkinter winfo).
             threshold: similarity score (0-1) needed to fire the click.
             poll_interval: seconds between screen captures.
             cooldown: seconds to wait after clicking before resuming.
@@ -64,9 +87,13 @@ class ScreenMonitor:
 
                 if score >= self.threshold:
                     self._report(f"Trigger detected! (score: {score:.2f}) Clicking...")
-                    orig_x, orig_y = pyautogui.position()
-                    pyautogui.click(click_x, click_y)
-                    pyautogui.moveTo(orig_x, orig_y)
+                    # Save cursor, move to target, click, restore cursor
+                    orig_x, orig_y = _get_cursor_pos()
+                    _set_cursor_pos(click_x, click_y)
+                    time.sleep(0.02)  # brief settle
+                    _left_click()
+                    time.sleep(0.02)
+                    _set_cursor_pos(orig_x, orig_y)
                     time.sleep(self.cooldown)
                     if self._running:
                         self._report("Monitoring...")
