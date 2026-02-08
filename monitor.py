@@ -63,7 +63,10 @@ class ScreenMonitor:
 
                 if score >= self.threshold:
                     self._report(f"Trigger detected! (score: {score:.2f}) Clicking...")
+                    # Save current mouse position, click target, restore position
+                    orig_x, orig_y = pyautogui.position()
                     pyautogui.click(center_x, center_y)
+                    pyautogui.moveTo(orig_x, orig_y)
                     time.sleep(self.cooldown)
                     if self._running:
                         self._report("Monitoring...")

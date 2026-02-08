@@ -60,6 +60,20 @@ class App:
         self.threshold_label.pack(side=tk.LEFT, padx=(4, 0))
         self.threshold_var.trace_add("write", self._update_threshold_label)
 
+        # --- Cooldown slider ---
+        cooldown_frame = ttk.Frame(self.root)
+        cooldown_frame.pack(fill=tk.X, **pad)
+        ttk.Label(cooldown_frame, text="Cooldown (sec):").pack(side=tk.LEFT)
+        self.cooldown_var = tk.DoubleVar(value=1.0)
+        self.cooldown_slider = ttk.Scale(
+            cooldown_frame, from_=0.1, to=10.0, variable=self.cooldown_var,
+            orient=tk.HORIZONTAL
+        )
+        self.cooldown_slider.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 0))
+        self.cooldown_label = ttk.Label(cooldown_frame, text="1.0s")
+        self.cooldown_label.pack(side=tk.LEFT, padx=(4, 0))
+        self.cooldown_var.trace_add("write", self._update_cooldown_label)
+
         # --- Start / Stop ---
         self.btn_toggle = ttk.Button(
             self.root, text="Start", state=tk.DISABLED,
@@ -88,6 +102,9 @@ class App:
 
     def _update_threshold_label(self, *_args):
         self.threshold_label.config(text=f"{self.threshold_var.get()}%")
+
+    def _update_cooldown_label(self, *_args):
+        self.cooldown_label.config(text=f"{self.cooldown_var.get():.1f}s")
 
     def _select_control(self):
         self.root.withdraw()
@@ -148,10 +165,12 @@ class App:
         if self.bbox is None or self.trigger_image is None:
             return
         threshold = self.threshold_var.get() / 100.0
+        cooldown = self.cooldown_var.get()
         self.monitor = ScreenMonitor(
             bbox=self.bbox,
             trigger_image=self.trigger_image,
             threshold=threshold,
+            cooldown=cooldown,
             on_status=self._on_monitor_status,
         )
         self.monitor.start()
