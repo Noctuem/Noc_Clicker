@@ -1,0 +1,5 @@
+mss
+Pillow
+numpy
+pyautogui
+screeninfo
