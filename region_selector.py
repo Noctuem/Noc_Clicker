@@ -94,3 +94,64 @@ class RegionSelector:
         self.root.destroy()
         if self.on_select:
             self.on_select(None)
+
+
+class ClickPositionSelector:
+    """Fullscreen overlay where the user clicks once to set the click target position."""
+
+    def __init__(self, on_select=None):
+        """
+        Args:
+            on_select: callback((x, y)) in absolute screen coordinates, or None if cancelled.
+        """
+        self.on_select = on_select
+
+        # Capture the entire virtual desktop
+        with mss.mss() as sct:
+            virtual = sct.monitors[0]
+            self.offset_x = virtual["left"]
+            self.offset_y = virtual["top"]
+            self.total_w = virtual["width"]
+            self.total_h = virtual["height"]
+            screenshot = sct.grab(virtual)
+            self.screenshot = Image.frombytes("RGB", screenshot.size, screenshot.rgb)
+
+        dimmed = ImageEnhance.Brightness(self.screenshot).enhance(0.5)
+
+        self.root = tk.Toplevel()
+        self.root.title("Set Click Position")
+        self.root.attributes("-topmost", True)
+        self.root.overrideredirect(True)
+        self.root.geometry(
+            f"{self.total_w}x{self.total_h}+{self.offset_x}+{self.offset_y}"
+        )
+
+        self.tk_image = ImageTk.PhotoImage(dimmed)
+        self.canvas = tk.Canvas(
+            self.root, width=self.total_w, height=self.total_h,
+            highlightthickness=0, cursor="crosshair"
+        )
+        self.canvas.pack(fill=tk.BOTH, expand=True)
+        self.canvas.create_image(0, 0, anchor=tk.NW, image=self.tk_image)
+
+        # Instruction text
+        self.canvas.create_text(
+            self.total_w // 2, 30,
+            text="Click where you want the auto-click to land  (Esc to cancel)",
+            fill="white", font=("Arial", 16, "bold")
+        )
+
+        self.canvas.bind("<ButtonPress-1>", self._on_click)
+        self.root.bind("<Escape>", self._on_cancel)
+
+    def _on_click(self, event):
+        abs_x = event.x + self.offset_x
+        abs_y = event.y + self.offset_y
+        self.root.destroy()
+        if self.on_select:
+            self.on_select((abs_x, abs_y))
+
+    def _on_cancel(self, event):
+        self.root.destroy()
+        if self.on_select:
+            self.on_select(None)

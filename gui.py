@@ -4,7 +4,7 @@ from tkinter import ttk
 import mss
 from PIL import Image, ImageTk
 
-from region_selector import RegionSelector
+from region_selector import RegionSelector, ClickPositionSelector
 from monitor import ScreenMonitor
 
 THUMB_SIZE = (160, 120)
@@ -17,6 +17,7 @@ class App:
         self.root.resizable(False, False)
 
         self.bbox = None
+        self.click_pos = None
         self.control_image = None
         self.trigger_image = None
         self.monitor = None
@@ -45,6 +46,12 @@ class App:
             command=self._capture_trigger
         )
         self.btn_trigger.pack(fill=tk.X, **pad)
+
+        self.btn_click_pos = ttk.Button(
+            btn_frame, text="Set Click Position", state=tk.DISABLED,
+            command=self._select_click_pos
+        )
+        self.btn_click_pos.pack(fill=tk.X, **pad)
 
         # --- Threshold slider ---
         slider_frame = ttk.Frame(self.root)
@@ -131,8 +138,24 @@ class App:
             return
         self.trigger_image = self._capture_region(self.bbox)
         self._show_preview(self.trigger_image, "trigger")
+        self.btn_click_pos.config(state=tk.NORMAL)
+        self.status_var.set("Trigger captured. Now set the click position.")
+
+    def _select_click_pos(self):
+        self.root.withdraw()
+        self.root.after(200, self._open_click_selector)
+
+    def _open_click_selector(self):
+        ClickPositionSelector(on_select=self._on_click_pos_selected)
+
+    def _on_click_pos_selected(self, pos):
+        self.root.deiconify()
+        if pos is None:
+            self.status_var.set("Click position selection cancelled.")
+            return
+        self.click_pos = pos
         self.btn_toggle.config(state=tk.NORMAL)
-        self.status_var.set("Trigger captured. Ready to start.")
+        self.status_var.set(f"Click position set at ({pos[0]}, {pos[1]}). Ready to start.")
 
     def _capture_region(self, bbox):
         x, y, w, h = bbox
@@ -157,18 +180,20 @@ class App:
             self.btn_toggle.config(text="Start")
             self.btn_control.config(state=tk.NORMAL)
             self.btn_trigger.config(state=tk.NORMAL)
+            self.btn_click_pos.config(state=tk.NORMAL)
             self.status_var.set("Stopped.")
         else:
             self._start_monitor()
 
     def _start_monitor(self):
-        if self.bbox is None or self.trigger_image is None:
+        if self.bbox is None or self.trigger_image is None or self.click_pos is None:
             return
         threshold = self.threshold_var.get() / 100.0
         cooldown = self.cooldown_var.get()
         self.monitor = ScreenMonitor(
             bbox=self.bbox,
             trigger_image=self.trigger_image,
+            click_pos=self.click_pos,
             threshold=threshold,
             cooldown=cooldown,
             on_status=self._on_monitor_status,
@@ -177,6 +202,7 @@ class App:
         self.btn_toggle.config(text="Stop")
         self.btn_control.config(state=tk.DISABLED)
         self.btn_trigger.config(state=tk.DISABLED)
+        self.btn_click_pos.config(state=tk.DISABLED)
 
     def _on_monitor_status(self, msg):
         # Called from the monitor thread — schedule on the main thread

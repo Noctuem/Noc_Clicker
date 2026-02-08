@@ -11,12 +11,13 @@ import image_compare
 class ScreenMonitor:
     """Monitors a screen region and clicks when the trigger image is detected."""
 
-    def __init__(self, bbox, trigger_image, threshold=0.90,
+    def __init__(self, bbox, trigger_image, click_pos, threshold=0.90,
                  poll_interval=0.1, cooldown=0.5, on_status=None):
         """
         Args:
             bbox: (x, y, width, height) absolute screen coordinates.
             trigger_image: PIL Image of the trigger state.
+            click_pos: (x, y) absolute screen coordinates to click.
             threshold: similarity score (0-1) needed to fire the click.
             poll_interval: seconds between screen captures.
             cooldown: seconds to wait after clicking before resuming.
@@ -24,6 +25,7 @@ class ScreenMonitor:
         """
         self.bbox = bbox
         self.trigger_image = trigger_image
+        self.click_pos = click_pos
         self.threshold = threshold
         self.poll_interval = poll_interval
         self.cooldown = cooldown
@@ -49,8 +51,7 @@ class ScreenMonitor:
     def _run(self):
         x, y, w, h = self.bbox
         region = {"left": x, "top": y, "width": w, "height": h}
-        center_x = x + w // 2
-        center_y = y + h // 2
+        click_x, click_y = self.click_pos
 
         self._report("Monitoring...")
 
@@ -63,9 +64,8 @@ class ScreenMonitor:
 
                 if score >= self.threshold:
                     self._report(f"Trigger detected! (score: {score:.2f}) Clicking...")
-                    # Save current mouse position, click target, restore position
                     orig_x, orig_y = pyautogui.position()
-                    pyautogui.click(center_x, center_y)
+                    pyautogui.click(click_x, click_y)
                     pyautogui.moveTo(orig_x, orig_y)
                     time.sleep(self.cooldown)
                     if self._running:
