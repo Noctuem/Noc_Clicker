@@ -183,8 +183,6 @@ class SimplePanel(ttk.Frame):
         ttk.Radiobutton(ks_row, text="Hold", variable=self._ks_mode_var,
                         value="hold").pack(side=tk.LEFT)
 
-        self._trig_type_changed()
-
         # --- Action section ---
         act_frame = ttk.LabelFrame(self, text="Action")
         act_frame.pack(fill=tk.X, **PAD)
@@ -231,6 +229,9 @@ class SimplePanel(ttk.Frame):
                                       state=tk.DISABLED)
         self._start_btn.pack(fill=tk.X, **PAD)
 
+        # Now safe to call — _start_btn exists
+        self._trig_type_changed()
+
     # ------------------------------------------------------------------
 
     def _trig_type_changed(self):
@@ -270,7 +271,8 @@ class SimplePanel(ttk.Frame):
         else:
             ok = self._ks_binding_box.get_binding() is not None
         state = tk.NORMAL if ok else tk.DISABLED
-        self._start_btn.config(state=state)
+        if hasattr(self, "_start_btn"):
+            self._start_btn.config(state=state)
 
     def set_running(self, running: bool) -> None:
         self._start_btn.config(text="Stop" if running else "Start")
@@ -461,7 +463,8 @@ class AdvancedPanel(ttk.Frame):
 
     def _update_start_state(self):
         ok = self._trigger_img is not None
-        self._start_btn.config(state=tk.NORMAL if ok else tk.DISABLED)
+        if hasattr(self, "_start_btn"):
+            self._start_btn.config(state=tk.NORMAL if ok else tk.DISABLED)
 
     def set_running(self, running: bool) -> None:
         self._start_btn.config(text="Stop" if running else "Start")

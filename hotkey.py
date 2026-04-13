@@ -209,7 +209,7 @@ class BindingCapture:
             self._mods.add(mod)
             return
         # Escape cancels
-        if key == kb.Key.escape:
+        if key == kb.Key.esc:
             self.cancel()
             return
 
