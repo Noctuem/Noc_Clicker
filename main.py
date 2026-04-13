@@ -5,8 +5,8 @@ from gui import App
 
 
 def main():
-    # Make the process DPI-aware so mss coordinates match pyautogui/tkinter
-    ctypes.windll.shcore.SetProcessDpiAwareness(2)  # PROCESS_PER_MONITOR_DPI_AWARE
+    # Per-monitor DPI awareness keeps mss and tkinter in the same coordinate space
+    ctypes.windll.shcore.SetProcessDpiAwareness(2)
 
     root = tk.Tk()
     App(root)

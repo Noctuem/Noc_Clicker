@@ -1,253 +1,1096 @@
+"""
+Main application window for Noc Clicker.
+
+Layout
+------
+  Menu bar  (File | View | Help)
+  Mode tabs (Simple | Advanced)
+  ├─ Simple panel
+  └─ Advanced panel
+  Hotkeys panel   (always visible)
+  Log / status    (always visible)
+  Footer          ("created by noctuem_")
+
+Simple mode
+-----------
+  Trigger: image region OR keystroke (toggle / hold)
+  Action:  click or key press
+  Target window, interval, cooldown, poll interval, threshold
+  Start / Stop button
+
+Advanced mode
+-------------
+  Primary trigger region
+  Mode: Sequence | Parallel   +  Sequential | Random (sequence only)
+  Target list (TargetList widget)
+  Start / Stop button
+"""
+
+from __future__ import annotations
+
+import datetime
 import tkinter as tk
-from tkinter import ttk
+from tkinter import messagebox, simpledialog, ttk
+from typing import Optional
 
 import mss
 from PIL import Image, ImageTk
 
+import actions
+import engine as eng
+import profile as prof
+from assets import FONT_FAMILY
+import hotkey as hk
 from region_selector import RegionSelector
-from monitor import ScreenMonitor
+from theme import ThemeManager
+from widgets import (
+    BindingBox, ColorSwatch, ColorPickerDialog,
+    RegionPreview, TargetList, WindowDropdown,
+)
 
-THUMB_SIZE = (160, 120)
-MARKER_SIZE = 40
-
-
-class ClickMarker:
-    """A small draggable on-screen crosshair showing where the auto-click will land."""
-
-    def __init__(self, root):
-        self.window = tk.Toplevel(root)
-        self.window.overrideredirect(True)
-        self.window.attributes("-topmost", True)
-        self.window.attributes("-transparentcolor", "white")
-
-        self.canvas = tk.Canvas(
-            self.window, width=MARKER_SIZE, height=MARKER_SIZE,
-            bg="white", highlightthickness=0, cursor="fleur"
-        )
-        self.canvas.pack()
-
-        # Draw crosshair with circle
-        mid = MARKER_SIZE // 2
-        self.canvas.create_line(0, mid, MARKER_SIZE, mid, fill="red", width=2)
-        self.canvas.create_line(mid, 0, mid, MARKER_SIZE, fill="red", width=2)
-        self.canvas.create_oval(mid - 10, mid - 10, mid + 10, mid + 10,
-                                outline="red", width=2)
-        self.canvas.create_oval(mid - 2, mid - 2, mid + 2, mid + 2,
-                                fill="red", outline="red")
-
-        # Dragging state
-        self._drag_x = 0
-        self._drag_y = 0
-        self.canvas.bind("<ButtonPress-1>", self._on_press)
-        self.canvas.bind("<B1-Motion>", self._on_drag)
-
-        # Start hidden
-        self.window.withdraw()
-
-    def _on_press(self, event):
-        self._drag_x = event.x
-        self._drag_y = event.y
-
-    def _on_drag(self, event):
-        x = self.window.winfo_x() + (event.x - self._drag_x)
-        y = self.window.winfo_y() + (event.y - self._drag_y)
-        self.window.geometry(f"+{x}+{y}")
-
-    def get_position(self):
-        """Return the center of the marker in screen coordinates."""
-        x = self.window.winfo_x() + MARKER_SIZE // 2
-        y = self.window.winfo_y() + MARKER_SIZE // 2
-        return (x, y)
-
-    def show(self):
-        self.window.deiconify()
-
-    def hide(self):
-        self.window.withdraw()
+PAD  = {"padx": 8, "pady": 4}
+PAD2 = {"padx": 4, "pady": 2}
+THUMB = (148, 100)
 
 
-class App:
-    def __init__(self, root: tk.Tk):
-        self.root = root
-        self.root.title("Auto Clicker")
-        self.root.resizable(False, False)
+# ===========================================================================
+# Theme editor dialog
+# ===========================================================================
 
-        self.bbox = None
-        self.control_image = None
-        self.trigger_image = None
-        self.monitor = None
+class ThemeEditorDialog(tk.Toplevel):
+    """Lets the user customise every colour key in the current palette."""
 
-        # Keep references to PhotoImage objects so they aren't garbage-collected
-        self._control_photo = None
-        self._trigger_photo = None
+    def __init__(self, parent, tm: ThemeManager):
+        super().__init__(parent)
+        self.title("Theme Editor")
+        self.resizable(False, False)
+        self.transient(parent)
+        self.grab_set()
+        self._tm = tm
+        self._swatches: dict[str, ColorSwatch] = {}
+        self._build()
+        self.wait_window()
 
-        self.click_marker = ClickMarker(root)
+    def _build(self):
+        f = FONT_FAMILY
+        ttk.Label(self, text="Colour Keys", style="Header.TLabel").pack(**PAD)
 
-        self._build_ui()
+        canvas = tk.Canvas(self, highlightthickness=0, bd=0, width=360, height=420)
+        canvas.pack(fill=tk.BOTH, expand=True, padx=8)
+        scroll = ttk.Scrollbar(self, orient=tk.VERTICAL, command=canvas.yview)
+        scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        canvas.config(yscrollcommand=scroll.set)
+        inner = ttk.Frame(canvas)
+        canvas.create_window((0, 0), window=inner, anchor="nw")
+        inner.bind("<Configure>", lambda e: canvas.config(scrollregion=canvas.bbox("all")))
 
-    def _build_ui(self):
-        pad = {"padx": 8, "pady": 4}
+        for row, (key, val) in enumerate(self._tm.PALETTE.items()):
+            ttk.Label(inner, text=key, style="Small.TLabel", width=22,
+                      anchor="w").grid(row=row, column=0, padx=4, pady=2, sticky="w")
+            sw = ColorSwatch(inner, color=val,
+                             on_change=lambda c, k=key: self._apply(k, c))
+            sw.grid(row=row, column=1, padx=4, pady=2)
+            self._swatches[key] = sw
 
-        # --- Buttons ---
-        btn_frame = ttk.Frame(self.root)
-        btn_frame.pack(fill=tk.X, **pad)
+        btn_frame = ttk.Frame(self)
+        btn_frame.pack(pady=8)
+        ttk.Button(btn_frame, text="Save as Custom",
+                   style="Accent.TButton", command=self._save).pack(side=tk.LEFT, padx=4)
+        ttk.Button(btn_frame, text="Reset to Dark",
+                   command=lambda: self._reset("dark")).pack(side=tk.LEFT, padx=4)
+        ttk.Button(btn_frame, text="Reset to Light",
+                   command=lambda: self._reset("light")).pack(side=tk.LEFT, padx=4)
+        ttk.Button(btn_frame, text="Close",
+                   command=self.destroy).pack(side=tk.LEFT, padx=4)
 
-        self.btn_control = ttk.Button(
-            btn_frame, text="Select Region & Capture Control",
-            command=self._select_control
-        )
-        self.btn_control.pack(fill=tk.X, **pad)
+    def _apply(self, key: str, color: str) -> None:
+        self._tm.set_custom_color(key, color)
 
-        self.btn_trigger = ttk.Button(
-            btn_frame, text="Capture Trigger", state=tk.DISABLED,
-            command=self._capture_trigger
-        )
-        self.btn_trigger.pack(fill=tk.X, **pad)
+    def _save(self) -> None:
+        self._tm.apply("custom")
+        messagebox.showinfo("Theme saved", "Custom theme applied and saved.", parent=self)
 
-        # --- Threshold slider ---
-        slider_frame = ttk.Frame(self.root)
-        slider_frame.pack(fill=tk.X, **pad)
-        ttk.Label(slider_frame, text="Similarity Threshold:").pack(side=tk.LEFT)
-        self.threshold_var = tk.IntVar(value=90)
-        self.slider = ttk.Scale(
-            slider_frame, from_=50, to=100, variable=self.threshold_var,
-            orient=tk.HORIZONTAL
-        )
-        self.slider.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 0))
-        self.threshold_label = ttk.Label(slider_frame, text="90%")
-        self.threshold_label.pack(side=tk.LEFT, padx=(4, 0))
-        self.threshold_var.trace_add("write", self._update_threshold_label)
+    def _reset(self, name: str) -> None:
+        self._tm.apply(name)
+        self.destroy()
 
-        # --- Cooldown input ---
-        cooldown_frame = ttk.Frame(self.root)
-        cooldown_frame.pack(fill=tk.X, **pad)
-        ttk.Label(cooldown_frame, text="Cooldown (sec):").pack(side=tk.LEFT)
-        self.cooldown_var = tk.StringVar(value="1.0")
-        self.cooldown_entry = ttk.Entry(
-            cooldown_frame, textvariable=self.cooldown_var, width=8
-        )
-        self.cooldown_entry.pack(side=tk.LEFT, padx=(4, 0))
+
+# ===========================================================================
+# Simple mode panel
+# ===========================================================================
+
+class SimplePanel(ttk.Frame):
+    def __init__(self, parent, app: "App", **kw):
+        super().__init__(parent, **kw)
+        self._app = app
+        self._region_abs: Optional[dict] = None
+        self._region_rel: Optional[dict] = None
+        self._monitors:   Optional[list] = None
+        self._trigger_img: Optional[Image.Image] = None
+        self._build()
+
+    def _build(self):
+        f = FONT_FAMILY
+        app = self._app
+
+        # --- Trigger section ---
+        trig_frame = ttk.LabelFrame(self, text="Trigger")
+        trig_frame.pack(fill=tk.X, **PAD)
+
+        self._trig_type = tk.StringVar(value="image")
+        type_row = ttk.Frame(trig_frame)
+        type_row.pack(fill=tk.X, **PAD2)
+        ttk.Radiobutton(type_row, text="Image Region",
+                        variable=self._trig_type, value="image",
+                        command=self._trig_type_changed).pack(side=tk.LEFT, padx=(0, 12))
+        ttk.Radiobutton(type_row, text="Keystroke",
+                        variable=self._trig_type, value="keystroke",
+                        command=self._trig_type_changed).pack(side=tk.LEFT)
+
+        # Image sub-panel
+        self._img_panel = ttk.Frame(trig_frame)
+        self._img_panel.pack(fill=tk.X, **PAD2)
+        ttk.Button(self._img_panel, text="Select Region & Capture",
+                   command=self._select_region).pack(side=tk.LEFT, padx=(0, 8))
+        self._region_preview = RegionPreview(self._img_panel)
+        self._region_preview.pack(side=tk.LEFT)
+
+        thresh_row = ttk.Frame(trig_frame)
+        thresh_row.pack(fill=tk.X, **PAD2)
+        ttk.Label(thresh_row, text="Similarity:").pack(side=tk.LEFT)
+        self._threshold_var = tk.IntVar(value=90)
+        self._thresh_slider = ttk.Scale(thresh_row, from_=50, to=100,
+                                         variable=self._threshold_var, orient=tk.HORIZONTAL)
+        self._thresh_slider.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 0))
+        self._thresh_lbl = ttk.Label(thresh_row, text="90%", width=5)
+        self._thresh_lbl.pack(side=tk.LEFT, padx=(4, 0))
+        self._threshold_var.trace_add("write", lambda *_: self._thresh_lbl.config(
+            text=f"{self._threshold_var.get()}%"
+        ))
+
+        # Keystroke sub-panel
+        self._ks_panel = ttk.Frame(trig_frame)
+        ks_row = ttk.Frame(self._ks_panel)
+        ks_row.pack(fill=tk.X, **PAD2)
+        ttk.Label(ks_row, text="Key:").pack(side=tk.LEFT)
+        self._ks_binding_box = BindingBox(ks_row, allow_mouse=False,
+                                           theme_manager=app.theme)
+        self._ks_binding_box.pack(side=tk.LEFT, padx=(4, 12), fill=tk.X, expand=True)
+
+        self._ks_mode_var = tk.StringVar(value="toggle")
+        ttk.Radiobutton(ks_row, text="Toggle", variable=self._ks_mode_var,
+                        value="toggle").pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Radiobutton(ks_row, text="Hold", variable=self._ks_mode_var,
+                        value="hold").pack(side=tk.LEFT)
+
+        self._trig_type_changed()
+
+        # --- Action section ---
+        act_frame = ttk.LabelFrame(self, text="Action")
+        act_frame.pack(fill=tk.X, **PAD)
+
+        act_row = ttk.Frame(act_frame)
+        act_row.pack(fill=tk.X, **PAD2)
+        ttk.Label(act_row, text="Action:").pack(side=tk.LEFT)
+        self._action_box = BindingBox(act_row, allow_mouse=True,
+                                       theme_manager=app.theme)
+        self._action_box.set_binding(actions.make_binding("click", button="left"))
+        self._action_box.pack(side=tk.LEFT, padx=(4, 0), fill=tk.X, expand=True)
+
+        win_row = ttk.Frame(act_frame)
+        win_row.pack(fill=tk.X, **PAD2)
+        ttk.Label(win_row, text="Window:").pack(side=tk.LEFT)
+        self._window_dd = WindowDropdown(win_row)
+        self._window_dd.pack(side=tk.LEFT, padx=(4, 0), fill=tk.X, expand=True)
+
+        # --- Timing section ---
+        timing_frame = ttk.LabelFrame(self, text="Timing")
+        timing_frame.pack(fill=tk.X, **PAD)
+
+        def _timing_row(parent, label, var, default, unit="s"):
+            row = ttk.Frame(parent)
+            row.pack(fill=tk.X, **PAD2)
+            ttk.Label(row, text=label, width=14, anchor="w").pack(side=tk.LEFT)
+            ent = ttk.Entry(row, textvariable=var, width=7)
+            ent.pack(side=tk.LEFT)
+            ttk.Label(row, text=unit, style="Muted.TLabel").pack(side=tk.LEFT, padx=(2, 0))
+            return ent
+
+        self._interval_var  = tk.StringVar(value="1.0")
+        self._cooldown_var  = tk.StringVar(value="1.0")
+        self._poll_var      = tk.StringVar(value="0.1")
+
+        _timing_row(timing_frame, "Interval:",     self._interval_var,  "1.0")
+        _timing_row(timing_frame, "Cooldown:",     self._cooldown_var,  "1.0")
+        _timing_row(timing_frame, "Poll interval:", self._poll_var,     "0.1")
 
         # --- Start / Stop ---
-        self.btn_toggle = ttk.Button(
-            self.root, text="Start", state=tk.DISABLED,
-            command=self._toggle_monitor
-        )
-        self.btn_toggle.pack(fill=tk.X, **pad)
+        self._start_btn = ttk.Button(self, text="Start",
+                                      style="Accent.TButton",
+                                      command=app.toggle_start_stop,
+                                      state=tk.DISABLED)
+        self._start_btn.pack(fill=tk.X, **PAD)
 
-        # --- Status ---
-        self.status_var = tk.StringVar(value="Idle")
-        ttk.Label(self.root, textvariable=self.status_var,
-                  foreground="gray").pack(**pad)
+    # ------------------------------------------------------------------
 
-        # --- Previews ---
-        preview_frame = ttk.Frame(self.root)
-        preview_frame.pack(fill=tk.X, **pad)
+    def _trig_type_changed(self):
+        t = self._trig_type.get()
+        if t == "image":
+            self._img_panel.pack(fill=tk.X, **PAD2)
+            self._ks_panel.pack_forget()
+        else:
+            self._img_panel.pack_forget()
+            self._ks_panel.pack(fill=tk.X, **PAD2)
+        self._update_start_state()
 
-        ctrl_frame = ttk.LabelFrame(preview_frame, text="Control")
-        ctrl_frame.pack(side=tk.LEFT, padx=4)
-        self.control_preview = ttk.Label(ctrl_frame)
-        self.control_preview.pack(padx=4, pady=4)
-
-        trig_frame = ttk.LabelFrame(preview_frame, text="Trigger")
-        trig_frame.pack(side=tk.LEFT, padx=4)
-        self.trigger_preview = ttk.Label(trig_frame)
-        self.trigger_preview.pack(padx=4, pady=4)
-
-    def _update_threshold_label(self, *_args):
-        self.threshold_label.config(text=f"{self.threshold_var.get()}%")
-
-    def _get_cooldown(self):
-        try:
-            val = float(self.cooldown_var.get())
-            return max(0.0, val)
-        except ValueError:
-            return 1.0
-
-    def _select_control(self):
-        self.click_marker.hide()
-        self.root.withdraw()
-        # Small delay so the main window has time to hide
-        self.root.after(200, self._open_selector)
+    def _select_region(self):
+        self._app.root.withdraw()
+        self._app.root.after(200, self._open_selector)
 
     def _open_selector(self):
         RegionSelector(on_select=self._on_region_selected)
 
-    def _on_region_selected(self, bbox):
-        self.root.deiconify()
-        if bbox is None:
-            self.status_var.set("Selection cancelled.")
+    def _on_region_selected(self, abs_r, rel_r, monitors):
+        self._app.root.deiconify()
+        if abs_r is None:
             return
-
-        self.bbox = bbox
-        self.control_image = self._capture_region(bbox)
-        self._show_preview(self.control_image, "control")
-        self.btn_trigger.config(state=tk.NORMAL)
-        self.status_var.set(f"Control captured.  Region: {bbox}")
-
-    def _capture_trigger(self):
-        if self.bbox is None:
-            return
-        self.trigger_image = self._capture_region(self.bbox)
-        self._show_preview(self.trigger_image, "trigger")
-        self.btn_toggle.config(state=tk.NORMAL)
-
-        # Show the draggable click marker
-        x, y, w, h = self.bbox
-        self.click_marker.window.geometry(
-            f"+{x + w // 2 - MARKER_SIZE // 2}+{y + h // 2 - MARKER_SIZE // 2}"
-        )
-        self.click_marker.show()
-        self.status_var.set("Trigger captured. Drag the crosshair to the click target.")
-
-    def _capture_region(self, bbox):
-        x, y, w, h = bbox
+        self._region_abs  = abs_r
+        self._region_rel  = rel_r
+        self._monitors    = monitors
         with mss.mss() as sct:
-            shot = sct.grab({"left": x, "top": y, "width": w, "height": h})
-            return Image.frombytes("RGB", shot.size, shot.rgb)
+            shot = sct.grab(abs_r)
+            self._trigger_img = Image.frombytes("RGB", shot.size, shot.rgb)
+        self._region_preview.set_image(self._trigger_img)
+        self._update_start_state()
 
-    def _show_preview(self, image, which):
-        thumb = image.copy()
-        thumb.thumbnail(THUMB_SIZE)
-        photo = ImageTk.PhotoImage(thumb)
-        if which == "control":
-            self._control_photo = photo
-            self.control_preview.config(image=photo)
+    def _update_start_state(self):
+        t = self._trig_type.get()
+        if t == "image":
+            ok = self._trigger_img is not None
         else:
-            self._trigger_photo = photo
-            self.trigger_preview.config(image=photo)
+            ok = self._ks_binding_box.get_binding() is not None
+        state = tk.NORMAL if ok else tk.DISABLED
+        self._start_btn.config(state=state)
 
-    def _toggle_monitor(self):
-        if self.monitor and self.monitor._running:
-            self.monitor.stop()
-            self.btn_toggle.config(text="Start")
-            self.btn_control.config(state=tk.NORMAL)
-            self.btn_trigger.config(state=tk.NORMAL)
-            self.click_marker.show()
-            self.status_var.set("Stopped.")
+    def set_running(self, running: bool) -> None:
+        self._start_btn.config(text="Stop" if running else "Start")
+
+    def build_engine_config(self) -> dict:
+        t = self._trig_type.get()
+        cfg = {
+            "trigger_type":  t,
+            "action":        self._action_box.get_binding(),
+            "target_hwnd":   self._window_dd.get_hwnd(),
+            "interval":      _safe_float(self._interval_var.get(), 1.0),
+            "cooldown":      _safe_float(self._cooldown_var.get(), 1.0),
+            "poll_interval": _safe_float(self._poll_var.get(), 0.1),
+            "threshold":     self._threshold_var.get() / 100.0,
+        }
+        if t == "image":
+            cfg["region"]      = self._region_abs
+            cfg["trigger_img"] = self._trigger_img
         else:
-            self._start_monitor()
+            cfg["keystroke_binding"] = self._ks_binding_box.get_binding()
+            cfg["keystroke_mode"]    = self._ks_mode_var.get()
+        return cfg
 
-    def _start_monitor(self):
-        if self.bbox is None or self.trigger_image is None:
-            return
-        click_pos = self.click_marker.get_position()
-        self.click_marker.hide()
-        threshold = self.threshold_var.get() / 100.0
-        cooldown = self._get_cooldown()
-        self.monitor = ScreenMonitor(
-            bbox=self.bbox,
-            trigger_image=self.trigger_image,
-            click_pos=click_pos,
-            threshold=threshold,
-            cooldown=cooldown,
-            on_status=self._on_monitor_status,
+    def get_state(self) -> dict:
+        return {
+            "trigger_type":       self._trig_type.get(),
+            "region_rel":         self._region_rel,
+            "monitors":           None,   # not serialised
+            "trigger_img":        self._trigger_img,
+            "threshold":          self._threshold_var.get(),
+            "action":             self._action_box.get_binding(),
+            "target_hwnd":        self._window_dd.get_hwnd(),
+            "interval":           self._interval_var.get(),
+            "cooldown":           self._cooldown_var.get(),
+            "poll_interval":      self._poll_var.get(),
+            "keystroke_binding":  self._ks_binding_box.get_binding(),
+            "keystroke_mode":     self._ks_mode_var.get(),
+        }
+
+    def load_state(self, s: dict) -> None:
+        self._trig_type.set(s.get("trigger_type", "image"))
+        self._threshold_var.set(s.get("threshold", 90))
+        self._interval_var.set(s.get("interval", "1.0"))
+        self._cooldown_var.set(s.get("cooldown", "1.0"))
+        self._poll_var.set(s.get("poll_interval", "0.1"))
+        self._action_box.set_binding(s.get("action"))
+        self._window_dd.set_hwnd(s.get("target_hwnd"))
+        self._ks_binding_box.set_binding(s.get("keystroke_binding"))
+        self._ks_mode_var.set(s.get("keystroke_mode", "toggle"))
+
+        rel = s.get("region_rel")
+        img = s.get("trigger_img")
+        if rel:
+            self._region_rel = rel
+            self._region_abs = prof.region_to_absolute(rel)
+        if img:
+            self._trigger_img = img
+            self._region_preview.set_image(img)
+        self._trig_type_changed()
+        self._update_start_state()
+
+
+# ===========================================================================
+# Advanced mode panel
+# ===========================================================================
+
+class AdvancedPanel(ttk.Frame):
+    def __init__(self, parent, app: "App", **kw):
+        super().__init__(parent, **kw)
+        self._app         = app
+        self._region_abs: Optional[dict] = None
+        self._region_rel: Optional[dict] = None
+        self._monitors:   Optional[list] = None
+        self._trigger_img: Optional[Image.Image] = None
+        self._build()
+
+    def _build(self):
+        f   = FONT_FAMILY
+        app = self._app
+
+        # --- Primary trigger ---
+        pt_frame = ttk.LabelFrame(self, text="Primary Trigger")
+        pt_frame.pack(fill=tk.X, **PAD)
+
+        pt_row = ttk.Frame(pt_frame)
+        pt_row.pack(fill=tk.X, **PAD2)
+        ttk.Button(pt_row, text="Select Region",
+                   command=self._select_region).pack(side=tk.LEFT, padx=(0, 8))
+        self._pt_preview = RegionPreview(pt_row)
+        self._pt_preview.pack(side=tk.LEFT)
+
+        thresh_row = ttk.Frame(pt_frame)
+        thresh_row.pack(fill=tk.X, **PAD2)
+        ttk.Label(thresh_row, text="Similarity:").pack(side=tk.LEFT)
+        self._threshold_var = tk.IntVar(value=90)
+        ttk.Scale(thresh_row, from_=50, to=100,
+                  variable=self._threshold_var, orient=tk.HORIZONTAL
+                  ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 0))
+        self._thresh_lbl = ttk.Label(thresh_row, text="90%", width=5)
+        self._thresh_lbl.pack(side=tk.LEFT, padx=(4, 0))
+        self._threshold_var.trace_add("write", lambda *_: self._thresh_lbl.config(
+            text=f"{self._threshold_var.get()}%"
+        ))
+
+        poll_row = ttk.Frame(pt_frame)
+        poll_row.pack(fill=tk.X, **PAD2)
+        ttk.Label(poll_row, text="Poll interval:", width=14, anchor="w").pack(side=tk.LEFT)
+        self._poll_var = tk.StringVar(value="0.1")
+        ttk.Entry(poll_row, textvariable=self._poll_var, width=7).pack(side=tk.LEFT)
+        ttk.Label(poll_row, text="s", style="Muted.TLabel").pack(side=tk.LEFT, padx=(2, 0))
+
+        # --- Mode ---
+        mode_frame = ttk.LabelFrame(self, text="Mode")
+        mode_frame.pack(fill=tk.X, **PAD)
+
+        mode_row = ttk.Frame(mode_frame)
+        mode_row.pack(fill=tk.X, **PAD2)
+        self._adv_mode_var = tk.StringVar(value="sequence")
+        ttk.Radiobutton(mode_row, text="Sequence",
+                        variable=self._adv_mode_var, value="sequence",
+                        command=self._mode_changed).pack(side=tk.LEFT, padx=(0, 16))
+        ttk.Radiobutton(mode_row, text="Parallel",
+                        variable=self._adv_mode_var, value="parallel",
+                        command=self._mode_changed).pack(side=tk.LEFT)
+
+        self._order_frame = ttk.Frame(mode_frame)
+        self._order_frame.pack(fill=tk.X, **PAD2)
+        self._order_var = tk.StringVar(value="sequential")
+        ttk.Radiobutton(self._order_frame, text="Sequential",
+                        variable=self._order_var, value="sequential").pack(side=tk.LEFT, padx=(0,12))
+        self._rand_rb = ttk.Radiobutton(self._order_frame,
+                        text="Random (all fire once in shuffled order)",
+                        variable=self._order_var, value="random")
+        self._rand_rb.pack(side=tk.LEFT)
+
+        # --- Target list ---
+        list_frame = ttk.LabelFrame(self, text="Targets")
+        list_frame.pack(fill=tk.BOTH, expand=True, **PAD)
+
+        self._target_list = TargetList(
+            list_frame,
+            adv_mode="sequence",
+            on_change=self._on_targets_changed,
+            theme_manager=app.theme,
         )
-        self.monitor.start()
-        self.btn_toggle.config(text="Stop")
-        self.btn_control.config(state=tk.DISABLED)
-        self.btn_trigger.config(state=tk.DISABLED)
+        self._target_list.pack(fill=tk.BOTH, expand=True)
 
-    def _on_monitor_status(self, msg):
-        # Called from the monitor thread — schedule on the main thread
-        self.root.after(0, lambda: self.status_var.set(msg))
+        # --- Start / Stop ---
+        self._start_btn = ttk.Button(self, text="Start",
+                                      style="Accent.TButton",
+                                      command=app.toggle_start_stop,
+                                      state=tk.DISABLED)
+        self._start_btn.pack(fill=tk.X, **PAD)
+        self._update_start_state()
+
+    # ------------------------------------------------------------------
+
+    def _select_region(self):
+        self._app.root.withdraw()
+        self._app.root.after(200, self._open_selector)
+
+    def _open_selector(self):
+        RegionSelector(on_select=self._on_region_selected)
+
+    def _on_region_selected(self, abs_r, rel_r, monitors):
+        self._app.root.deiconify()
+        if abs_r is None:
+            return
+        self._region_abs = abs_r
+        self._region_rel = rel_r
+        self._monitors   = monitors
+        with mss.mss() as sct:
+            shot = sct.grab(abs_r)
+            self._trigger_img = Image.frombytes("RGB", shot.size, shot.rgb)
+        self._pt_preview.set_image(self._trigger_img)
+        self._update_start_state()
+
+    def _mode_changed(self):
+        mode = self._adv_mode_var.get()
+        if mode == "sequence":
+            self._order_frame.pack(fill=tk.X, **PAD2)
+        else:
+            self._order_frame.pack_forget()
+        self._target_list.set_mode(mode)
+
+    def _on_targets_changed(self):
+        self._update_start_state()
+
+    def _update_start_state(self):
+        ok = self._trigger_img is not None
+        self._start_btn.config(state=tk.NORMAL if ok else tk.DISABLED)
+
+    def set_running(self, running: bool) -> None:
+        self._start_btn.config(text="Stop" if running else "Start")
+
+    def build_engine_config(self) -> dict:
+        mode    = self._adv_mode_var.get()
+        targets = self._target_list.get_states()
+
+        cfg: dict = {
+            "adv_mode":       mode,
+            "primary_region": self._region_abs,
+            "primary_img":    self._trigger_img,
+            "threshold":      self._threshold_var.get() / 100.0,
+            "poll_interval":  _safe_float(self._poll_var.get(), 0.1),
+            "random_order":   self._order_var.get() == "random",
+            "targets":        targets,
+        }
+        return cfg
+
+    def get_state(self) -> dict:
+        return {
+            "adv_mode":     self._adv_mode_var.get(),
+            "order":        self._order_var.get(),
+            "region_rel":   self._region_rel,
+            "trigger_img":  self._trigger_img,
+            "threshold":    self._threshold_var.get(),
+            "poll_interval": self._poll_var.get(),
+            "targets":      self._target_list.get_states(),
+        }
+
+    def load_state(self, s: dict) -> None:
+        self._adv_mode_var.set(s.get("adv_mode", "sequence"))
+        self._order_var.set(s.get("order", "sequential"))
+        self._threshold_var.set(s.get("threshold", 90))
+        self._poll_var.set(s.get("poll_interval", "0.1"))
+
+        rel = s.get("region_rel")
+        img = s.get("trigger_img")
+        if rel:
+            self._region_rel = rel
+            self._region_abs = prof.region_to_absolute(rel)
+        if img:
+            self._trigger_img = img
+            self._pt_preview.set_image(img)
+
+        self._mode_changed()
+        self._update_start_state()
+
+
+# ===========================================================================
+# Hotkeys panel
+# ===========================================================================
+
+class HotkeysPanel(ttk.LabelFrame):
+    def __init__(self, parent, app: "App", **kw):
+        super().__init__(parent, text="Global Hotkeys", **kw)
+        self._app = app
+        self._build()
+
+    def _build(self):
+        row1 = ttk.Frame(self)
+        row1.pack(fill=tk.X, **PAD2)
+        ttk.Label(row1, text="Start / Stop:", width=12, anchor="w").pack(side=tk.LEFT)
+        self._start_box = BindingBox(row1, allow_mouse=False,
+                                      on_change=self._on_start_change,
+                                      theme_manager=self._app.theme)
+        self._start_box.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 0))
+
+        row2 = ttk.Frame(self)
+        row2.pack(fill=tk.X, **PAD2)
+        ttk.Label(row2, text="Abort:", width=12, anchor="w").pack(side=tk.LEFT)
+        self._abort_box = BindingBox(row2, allow_mouse=False,
+                                      on_change=self._on_abort_change,
+                                      theme_manager=self._app.theme)
+        self._abort_box.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 0))
+
+        self._conflict_lbl = ttk.Label(self, text="", style="Error.TLabel")
+        self._conflict_lbl.pack(**PAD2)
+
+    def _on_start_change(self, b: dict) -> None:
+        self._app.update_start_stop_hotkey(b)
+        self._check_conflict()
+
+    def _on_abort_change(self, b: dict) -> None:
+        self._app.update_abort_hotkey(b)
+        self._check_conflict()
+
+    def _check_conflict(self) -> None:
+        b1 = self._start_box.get_binding()
+        b2 = self._abort_box.get_binding()
+        if b1 and b2 and b1.get("type") == "key" and b2.get("type") == "key":
+            if (b1.get("vk") == b2.get("vk") and
+                    set(b1.get("mods", [])) == set(b2.get("mods", []))):
+                self._conflict_lbl.config(
+                    text="⚠ Start/Stop and Abort binds are identical")
+                return
+        self._conflict_lbl.config(text="")
+
+    def get_state(self) -> dict:
+        return {
+            "start_stop": self._start_box.get_binding(),
+            "abort":      self._abort_box.get_binding(),
+        }
+
+    def load_state(self, s: dict) -> None:
+        self._start_box.set_binding(s.get("start_stop"))
+        self._abort_box.set_binding(s.get("abort"))
+        self._app.update_start_stop_hotkey(s.get("start_stop"))
+        self._app.update_abort_hotkey(s.get("abort"))
+
+
+# ===========================================================================
+# Log widget
+# ===========================================================================
+
+class LogPanel(ttk.Frame):
+    MAX = 200
+
+    def __init__(self, parent, tm: ThemeManager, **kw):
+        super().__init__(parent, **kw)
+        self._tm = tm
+        self._build()
+        tm.on_change(lambda _: self._restyle())
+
+    def _build(self):
+        self.rowconfigure(0, weight=1)
+        self.columnconfigure(0, weight=1)
+        p = self._tm.PALETTE
+        self._text = tk.Text(
+            self, height=6, state=tk.DISABLED, wrap=tk.WORD,
+            bg=p["log_bg"], fg=p["log_fg"],
+            font=(FONT_FAMILY, 9),
+            relief="flat", bd=0, insertbackground=p["log_fg"],
+        )
+        self._text.grid(row=0, column=0, sticky="nsew")
+        scroll = ttk.Scrollbar(self, orient=tk.VERTICAL, command=self._text.yview)
+        scroll.grid(row=0, column=1, sticky="ns")
+        self._text.config(yscrollcommand=scroll.set)
+
+    def _restyle(self):
+        p = self._tm.PALETTE
+        self._text.config(bg=p["log_bg"], fg=p["log_fg"])
+
+    def append(self, msg: str) -> None:
+        ts = datetime.datetime.now().strftime("%H:%M:%S")
+        line = f"[{ts}] {msg}\n"
+        self._text.config(state=tk.NORMAL)
+        self._text.insert(tk.END, line)
+        # Trim to MAX lines
+        lines = int(self._text.index(tk.END).split(".")[0]) - 1
+        if lines > self.MAX:
+            self._text.delete("1.0", f"{lines - self.MAX}.0")
+        self._text.see(tk.END)
+        self._text.config(state=tk.DISABLED)
+
+
+# ===========================================================================
+# Main App
+# ===========================================================================
+
+class App:
+    def __init__(self, root: tk.Tk):
+        self.root = root
+        self.root.title("Noc Clicker")
+        self.root.resizable(False, False)
+
+        self.theme   = ThemeManager(root)
+        self._engine = eng.Engine(
+            on_status=self._on_status,
+            on_log=self._on_log,
+        )
+        self._hotkeys        = hk.HotkeyManager()
+        self._ks_capture:    Optional[hk.BindingCapture] = None
+        self._ks_running     = False   # for keystroke-trigger simple mode
+        self._ks_binding:    Optional[dict] = None
+        self._ks_mode:       str = "toggle"
+
+        self._start_stop_binding: Optional[dict] = None
+        self._abort_binding:      Optional[dict] = None
+
+        self._hotkeys.start()
+        self._build_ui()
+
+        root.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.theme.on_change(lambda _: self._retheme())
+
+    # ------------------------------------------------------------------
+    # UI construction
+    # ------------------------------------------------------------------
+
+    def _build_ui(self):
+        f   = FONT_FAMILY
+        p   = self.theme.PALETTE
+
+        self._build_menu()
+
+        # Notebook for Simple / Advanced
+        self._notebook = ttk.Notebook(self.root)
+        self._notebook.pack(fill=tk.BOTH, expand=True, padx=6, pady=(4, 0))
+
+        self._simple_scroll_frame   = _ScrollableFrame(self._notebook)
+        self._advanced_scroll_frame = _ScrollableFrame(self._notebook)
+
+        self._simple_panel   = SimplePanel(self._simple_scroll_frame.inner, app=self)
+        self._advanced_panel = AdvancedPanel(self._advanced_scroll_frame.inner, app=self)
+        self._simple_panel.pack(fill=tk.BOTH, expand=True)
+        self._advanced_panel.pack(fill=tk.BOTH, expand=True)
+
+        self._notebook.add(self._simple_scroll_frame,   text="  Simple  ")
+        self._notebook.add(self._advanced_scroll_frame, text="  Advanced  ")
+
+        # Hotkeys panel
+        self._hotkeys_panel = HotkeysPanel(self.root, app=self)
+        self._hotkeys_panel.pack(fill=tk.X, padx=6, pady=(4, 0))
+
+        # Status label
+        self._status_var = tk.StringVar(value="Idle")
+        ttk.Label(self.root, textvariable=self._status_var,
+                  style="Muted.TLabel").pack(padx=6, pady=(2, 0), anchor="w")
+
+        # Log
+        log_frame = ttk.LabelFrame(self.root, text="Log")
+        log_frame.pack(fill=tk.X, padx=6, pady=(2, 0))
+        self._log_panel = LogPanel(log_frame, tm=self.theme)
+        self._log_panel.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
+
+        # Footer
+        footer = ttk.Frame(self.root)
+        footer.pack(fill=tk.X, padx=6, pady=(2, 4))
+        ttk.Label(footer, text="created by noctuem_",
+                  style="Muted.TLabel", font=(f, 7)).pack(side=tk.RIGHT)
+
+        self.root.minsize(420, 520)
+        self.root.geometry("440x720")
+
+    def _build_menu(self):
+        menubar = tk.Menu(self.root)
+
+        # File
+        file_menu = tk.Menu(menubar, tearoff=0)
+        file_menu.add_command(label="New Profile",    command=self._profile_new)
+        file_menu.add_command(label="Save Profile",   command=self._profile_save)
+        file_menu.add_command(label="Load Profile…",  command=self._profile_load)
+        file_menu.add_separator()
+        file_menu.add_command(label="Delete Profile…",command=self._profile_delete)
+        file_menu.add_separator()
+        file_menu.add_command(label="Exit",            command=self._on_close)
+        menubar.add_cascade(label="File", menu=file_menu)
+
+        # View
+        view_menu = tk.Menu(menubar, tearoff=0)
+        view_menu.add_command(label="Dark Theme",    command=lambda: self.theme.apply("dark"))
+        view_menu.add_command(label="Light Theme",   command=lambda: self.theme.apply("light"))
+        view_menu.add_command(label="Custom Theme",  command=lambda: self.theme.apply("custom"))
+        view_menu.add_separator()
+        view_menu.add_command(label="Edit Theme…",   command=self._open_theme_editor)
+        menubar.add_cascade(label="View", menu=view_menu)
+
+        # Help
+        help_menu = tk.Menu(menubar, tearoff=0)
+        help_menu.add_command(label="About", command=self._about)
+        menubar.add_cascade(label="Help", menu=help_menu)
+
+        self.root.config(menu=menubar)
+
+    # ------------------------------------------------------------------
+    # Theme
+    # ------------------------------------------------------------------
+
+    def _retheme(self):
+        """Called when theme changes; re-colour native tk widgets."""
+        p = self.theme.PALETTE
+        f = FONT_FAMILY
+        try:
+            self.root.configure(bg=p["bg_primary"])
+        except Exception:
+            pass
+
+    def _open_theme_editor(self):
+        ThemeEditorDialog(self.root, self.theme)
+
+    # ------------------------------------------------------------------
+    # Hotkeys
+    # ------------------------------------------------------------------
+
+    def update_start_stop_hotkey(self, b: Optional[dict]) -> None:
+        if self._start_stop_binding:
+            self._hotkeys.unregister(
+                self._start_stop_binding.get("mods", []),
+                self._start_stop_binding.get("vk", 0),
+            )
+        self._start_stop_binding = b
+        if b and b.get("type") == "key" and b.get("vk"):
+            self._hotkeys.register(
+                b.get("mods", []), b["vk"],
+                callback=lambda: self.root.after(0, self.toggle_start_stop),
+                name="start_stop",
+            )
+
+    def update_abort_hotkey(self, b: Optional[dict]) -> None:
+        if self._abort_binding:
+            self._hotkeys.unregister(
+                self._abort_binding.get("mods", []),
+                self._abort_binding.get("vk", 0),
+            )
+        self._abort_binding = b
+        if b and b.get("type") == "key" and b.get("vk"):
+            self._hotkeys.register(
+                b.get("mods", []), b["vk"],
+                callback=lambda: self.root.after(0, self._engine.abort),
+                name="abort",
+            )
+
+    # ------------------------------------------------------------------
+    # Start / Stop
+    # ------------------------------------------------------------------
+
+    def toggle_start_stop(self) -> None:
+        if self._engine.is_running:
+            self._stop()
+        else:
+            self._start()
+
+    def _start(self) -> None:
+        tab = self._notebook.index(self._notebook.select())
+        if tab == 0:
+            cfg = self._simple_panel.build_engine_config()
+            # Keystroke trigger: handled specially
+            if cfg.get("trigger_type") == "keystroke":
+                self._start_keystroke_mode(cfg)
+                return
+            self._engine.configure_simple(cfg)
+        else:
+            cfg = self._advanced_panel.build_engine_config()
+            self._engine.configure_advanced(cfg)
+
+        self._engine.start()
+        self._set_running(True)
+
+    def _stop(self) -> None:
+        self._engine.stop()
+        self._cleanup_keystroke_mode()
+        self._set_running(False)
+
+    def _set_running(self, running: bool) -> None:
+        self._simple_panel.set_running(running)
+        self._advanced_panel.set_running(running)
+
+    # ------------------------------------------------------------------
+    # Keystroke trigger mode
+    # ------------------------------------------------------------------
+
+    def _start_keystroke_mode(self, cfg: dict) -> None:
+        binding = cfg.get("keystroke_binding")
+        mode    = cfg.get("keystroke_mode", "toggle")
+        if not binding or not binding.get("vk"):
+            return
+
+        self._ks_binding = binding
+        self._ks_mode    = mode
+        self._ks_running = False
+
+        action    = cfg.get("action")
+        hwnd      = cfg.get("target_hwnd")
+        interval  = cfg.get("interval", 1.0)
+
+        def on_hotkey():
+            if mode == "toggle":
+                if self._ks_running:
+                    self._ks_running = False
+                    self._engine.stop()
+                else:
+                    self._ks_running = True
+                    fire_cfg = {
+                        "trigger_type": "keystroke",
+                        "action": action,
+                        "target_hwnd": hwnd,
+                        "interval": interval,
+                        "cooldown": 0.0,
+                    }
+                    self._engine.configure_simple(fire_cfg)
+                    self._engine.start()
+            else:  # hold mode: press = start, release = stop
+                if not self._ks_running:
+                    self._ks_running = True
+                    fire_cfg = {
+                        "trigger_type": "keystroke",
+                        "action": action,
+                        "target_hwnd": hwnd,
+                        "interval": interval,
+                        "cooldown": 0.0,
+                    }
+                    self._engine.configure_simple(fire_cfg)
+                    self._engine.start()
+
+        self._hotkeys.register(
+            binding.get("mods", []), binding["vk"],
+            callback=on_hotkey,
+            name="ks_trigger",
+        )
+        self._set_running(True)
+        self._on_status("Keystroke trigger armed")
+
+    def _cleanup_keystroke_mode(self) -> None:
+        if self._ks_binding:
+            self._hotkeys.unregister(
+                self._ks_binding.get("mods", []),
+                self._ks_binding.get("vk", 0),
+            )
+            self._ks_binding = None
+        self._ks_running = False
+
+    # ------------------------------------------------------------------
+    # Engine callbacks (called from worker threads)
+    # ------------------------------------------------------------------
+
+    def _on_status(self, msg: str) -> None:
+        self.root.after(0, lambda: self._status_var.set(msg))
+
+    def _on_log(self, msg: str) -> None:
+        self.root.after(0, lambda: self._log_panel.append(msg))
+
+    # ------------------------------------------------------------------
+    # Profile management
+    # ------------------------------------------------------------------
+
+    def _get_full_state(self) -> dict:
+        return {
+            "mode":         self._notebook.index(self._notebook.select()),
+            "simple":       self._simple_panel.get_state(),
+            "advanced":     self._advanced_panel.get_state(),
+            "hotkeys":      self._hotkeys_panel.get_state(),
+            "theme_active": self.theme.active,
+            "theme_custom": self.theme._custom,
+        }
+
+    def _load_full_state(self, s: dict) -> None:
+        tab = s.get("mode", 0)
+        self._notebook.select(tab)
+
+        if "simple" in s:
+            self._simple_panel.load_state(s["simple"])
+        if "advanced" in s:
+            self._advanced_panel.load_state(s["advanced"])
+        if "hotkeys" in s:
+            self._hotkeys_panel.load_state(s["hotkeys"])
+
+        # Theme
+        if "theme_custom" in s:
+            from theme import _DARK
+            merged = dict(_DARK)
+            merged.update(s["theme_custom"])
+            self.theme._custom = merged
+        active = s.get("theme_active", "dark")
+        self.theme.apply(active)
+
+    def _profile_new(self) -> None:
+        if self._engine.is_running:
+            messagebox.showwarning("Running", "Stop the engine before managing profiles.")
+            return
+        # Reset to defaults
+        self._simple_panel.load_state({})
+        self._advanced_panel.load_state({})
+        self._on_status("New profile (unsaved)")
+
+    def _profile_save(self) -> None:
+        name = simpledialog.askstring(
+            "Save Profile", "Profile name:", parent=self.root
+        )
+        if not name:
+            return
+        name = name.strip()
+        if not name:
+            return
+        existing = prof.list_profiles()
+        if name in existing:
+            if not messagebox.askyesno(
+                "Overwrite?", f"Profile '{name}' exists. Overwrite?", parent=self.root
+            ):
+                return
+        try:
+            state = self._get_full_state()
+            prof.save_profile(name, state)
+            self._on_log(f"Profile saved: {name}")
+        except Exception as e:
+            messagebox.showerror("Save failed", str(e), parent=self.root)
+
+    def _profile_load(self) -> None:
+        profiles = prof.list_profiles()
+        if not profiles:
+            messagebox.showinfo("No profiles", "No saved profiles found.", parent=self.root)
+            return
+        dlg = _ListPickerDialog(self.root, title="Load Profile",
+                                 prompt="Select a profile:", items=profiles)
+        name = dlg.result
+        if not name:
+            return
+        state = prof.load_profile(name)
+        if state is None:
+            messagebox.showerror("Load failed", f"Could not load '{name}'.", parent=self.root)
+            return
+        try:
+            self._load_full_state(state)
+            self._on_log(f"Profile loaded: {name}")
+        except Exception as e:
+            messagebox.showerror("Load failed", str(e), parent=self.root)
+
+    def _profile_delete(self) -> None:
+        profiles = prof.list_profiles()
+        if not profiles:
+            messagebox.showinfo("No profiles", "No saved profiles found.", parent=self.root)
+            return
+        dlg = _ListPickerDialog(self.root, title="Delete Profile",
+                                 prompt="Select a profile to delete:", items=profiles)
+        name = dlg.result
+        if not name:
+            return
+        if messagebox.askyesno("Confirm", f"Delete profile '{name}'?", parent=self.root):
+            prof.delete_profile(name)
+            self._on_log(f"Profile deleted: {name}")
+
+    # ------------------------------------------------------------------
+    # Misc
+    # ------------------------------------------------------------------
+
+    def _about(self) -> None:
+        messagebox.showinfo(
+            "Noc Clicker",
+            "Noc Clicker\n"
+            "Image-triggered auto-clicker / key sender\n\n"
+            "Created by noctuem_\n"
+            "MIT License",
+            parent=self.root,
+        )
+
+    def _on_close(self) -> None:
+        if self._engine.is_running:
+            self._engine.abort()
+        self._hotkeys.stop()
+        self.theme.save()
+        self.root.destroy()
+
+
+# ===========================================================================
+# Helper: scrollable frame wrapper
+# ===========================================================================
+
+class _ScrollableFrame(ttk.Frame):
+    """A frame with a vertical scrollbar; children are added to .inner."""
+
+    def __init__(self, parent, **kw):
+        super().__init__(parent, **kw)
+        self.rowconfigure(0, weight=1)
+        self.columnconfigure(0, weight=1)
+
+        canvas = tk.Canvas(self, highlightthickness=0, bd=0)
+        canvas.grid(row=0, column=0, sticky="nsew")
+
+        scroll = ttk.Scrollbar(self, orient=tk.VERTICAL, command=canvas.yview)
+        scroll.grid(row=0, column=1, sticky="ns")
+        canvas.config(yscrollcommand=scroll.set)
+
+        self.inner = ttk.Frame(canvas)
+        win = canvas.create_window((0, 0), window=self.inner, anchor="nw")
+
+        def on_configure(_event=None):
+            canvas.config(scrollregion=canvas.bbox("all"))
+
+        def on_canvas_resize(event):
+            canvas.itemconfig(win, width=event.width)
+
+        self.inner.bind("<Configure>", on_configure)
+        canvas.bind("<Configure>", on_canvas_resize)
+        canvas.bind("<MouseWheel>", lambda e: canvas.yview_scroll(
+            -1 if e.delta > 0 else 1, "units"
+        ))
+
+
+# ===========================================================================
+# Helper: simple list-picker dialog
+# ===========================================================================
+
+class _ListPickerDialog(tk.Toplevel):
+    def __init__(self, parent, title: str, prompt: str, items: list[str]):
+        super().__init__(parent)
+        self.title(title)
+        self.resizable(False, False)
+        self.transient(parent)
+        self.grab_set()
+        self.result: Optional[str] = None
+
+        ttk.Label(self, text=prompt, style="TLabel").pack(padx=12, pady=(10, 4))
+
+        self._var = tk.StringVar(value=items[0] if items else "")
+        lb_frame = ttk.Frame(self)
+        lb_frame.pack(padx=12, pady=4)
+        scroll = ttk.Scrollbar(lb_frame)
+        scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        lb = tk.Listbox(lb_frame, listvariable=tk.StringVar(value=items),
+                        selectmode=tk.SINGLE, height=min(len(items), 10),
+                        yscrollcommand=scroll.set, width=36)
+        lb.pack(side=tk.LEFT)
+        scroll.config(command=lb.yview)
+        if items:
+            lb.selection_set(0)
+        self._lb = lb
+
+        btn_frame = ttk.Frame(self)
+        btn_frame.pack(pady=8)
+        ttk.Button(btn_frame, text="OK", style="Accent.TButton",
+                   command=self._ok).pack(side=tk.LEFT, padx=4)
+        ttk.Button(btn_frame, text="Cancel",
+                   command=self.destroy).pack(side=tk.LEFT, padx=4)
+
+        self.wait_window()
+
+    def _ok(self) -> None:
+        sel = self._lb.curselection()
+        if sel:
+            self.result = self._lb.get(sel[0])
+        self.destroy()
+
+
+# ===========================================================================
+# Utility
+# ===========================================================================
+
+def _safe_float(s: str, default: float) -> float:
+    try:
+        return max(0.0, float(s))
+    except (ValueError, TypeError):
+        return default
