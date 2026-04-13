@@ -91,7 +91,7 @@ class BindingBox(ttk.Frame):
         if self._hm:
             self._hm.pause()
         self._listening = True
-        self._var.set("Press a key or click…" if self._allow_mouse else "Press a key…")
+        self._var.set("press any key (esc to clear)")
 
         if self._allow_mouse:
             self._bind_mouse()
@@ -132,13 +132,16 @@ class BindingBox(ttk.Frame):
         self.after(0, self._restore_after_cancel)
 
     def _restore_after_cancel(self) -> None:
-        """Restore label to previous binding and resume hotkeys."""
+        """Escape was pressed — clear the binding and resume hotkeys."""
         self._listening = False
         self._unbind_mouse()
         self._capture = None
-        self._var.set(actions.binding_label(self._binding))  # restores "Unbound" if None
+        self._binding = None
+        self._var.set(actions.binding_label(None))  # "Unbound"
         if self._hm:
             self._hm.resume()
+        if self._on_change:
+            self._on_change(None)
 
     def _cancel_capture(self) -> None:
         if self._capture:
