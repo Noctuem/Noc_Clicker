@@ -148,45 +148,17 @@ class SimplePanel(ttk.Frame):
         f = FONT_FAMILY
         app = self._app
 
-        # --- Trigger section ---
+        # --- Trigger section (tab-based) ---
         trig_frame = ttk.LabelFrame(self, text="Trigger")
         trig_frame.pack(fill=tk.X, **PAD)
 
-        self._trig_type = tk.StringVar(value="keystroke")
-        type_row = ttk.Frame(trig_frame)
-        type_row.pack(fill=tk.X, **PAD2)
-        ttk.Radiobutton(type_row, text="Image Region",
-                        variable=self._trig_type, value="image",
-                        command=self._trig_type_changed).pack(side=tk.LEFT, padx=(0, 12))
-        ttk.Radiobutton(type_row, text="Keystroke",
-                        variable=self._trig_type, value="keystroke",
-                        command=self._trig_type_changed).pack(side=tk.LEFT)
+        self._trig_notebook = ttk.Notebook(trig_frame)
+        self._trig_notebook.pack(fill=tk.X, padx=4, pady=(4, 6))
 
-        # Image sub-panel
-        self._img_panel = ttk.Frame(trig_frame)
-        self._img_panel.pack(fill=tk.X, **PAD2)
-        ttk.Button(self._img_panel, text="Select Region & Capture",
-                   command=self._select_region).pack(side=tk.LEFT, padx=(0, 8))
-        self._region_preview = RegionPreview(self._img_panel)
-        self._region_preview.pack(side=tk.LEFT)
-
-        self._thresh_row = ttk.Frame(trig_frame)
-        thresh_row = self._thresh_row
-        thresh_row.pack(fill=tk.X, **PAD2)
-        ttk.Label(thresh_row, text="Similarity:").pack(side=tk.LEFT)
-        self._threshold_var = tk.IntVar(value=90)
-        self._thresh_slider = ttk.Scale(thresh_row, from_=50, to=100,
-                                         variable=self._threshold_var, orient=tk.HORIZONTAL)
-        self._thresh_slider.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 0))
-        self._thresh_lbl = ttk.Label(thresh_row, text="90%", width=5)
-        self._thresh_lbl.pack(side=tk.LEFT, padx=(4, 0))
-        self._threshold_var.trace_add("write", lambda *_: self._thresh_lbl.config(
-            text=f"{self._threshold_var.get()}%"
-        ))
-
-        # Keystroke sub-panel
-        self._ks_panel = ttk.Frame(trig_frame)
-        ks_row = ttk.Frame(self._ks_panel)
+        # Tab 0: Keystroke (default / leftmost)
+        ks_tab = ttk.Frame(self._trig_notebook)
+        self._trig_notebook.add(ks_tab, text="  Keystroke  ")
+        ks_row = ttk.Frame(ks_tab)
         ks_row.pack(fill=tk.X, **PAD2)
         ttk.Label(ks_row, text="Key:").pack(side=tk.LEFT)
         self._ks_binding_box = BindingBox(ks_row, allow_mouse=False,
@@ -194,12 +166,35 @@ class SimplePanel(ttk.Frame):
                                            theme_manager=app.theme,
                                            hotkey_manager=app._hotkeys)
         self._ks_binding_box.pack(side=tk.LEFT, padx=(4, 12), fill=tk.X, expand=True)
-
         self._ks_mode_var = tk.StringVar(value="toggle")
         ttk.Radiobutton(ks_row, text="Toggle", variable=self._ks_mode_var,
                         value="toggle").pack(side=tk.LEFT, padx=(0, 8))
         ttk.Radiobutton(ks_row, text="Hold", variable=self._ks_mode_var,
                         value="hold").pack(side=tk.LEFT)
+
+        # Tab 1: Image Region
+        img_tab = ttk.Frame(self._trig_notebook)
+        self._trig_notebook.add(img_tab, text="  Image Region  ")
+        img_row = ttk.Frame(img_tab)
+        img_row.pack(fill=tk.X, **PAD2)
+        ttk.Button(img_row, text="Select Region & Capture",
+                   command=self._select_region).pack(side=tk.LEFT, padx=(0, 8))
+        self._region_preview = RegionPreview(img_row)
+        self._region_preview.pack(side=tk.LEFT)
+        thresh_row = ttk.Frame(img_tab)
+        thresh_row.pack(fill=tk.X, **PAD2)
+        ttk.Label(thresh_row, text="Similarity:").pack(side=tk.LEFT)
+        self._threshold_var = tk.IntVar(value=90)
+        ttk.Scale(thresh_row, from_=50, to=100,
+                  variable=self._threshold_var, orient=tk.HORIZONTAL
+                  ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 0))
+        self._thresh_lbl = ttk.Label(thresh_row, text="90%", width=5)
+        self._thresh_lbl.pack(side=tk.LEFT, padx=(4, 0))
+        self._threshold_var.trace_add("write", lambda *_: self._thresh_lbl.config(
+            text=f"{self._threshold_var.get()}%"
+        ))
+
+        self._trig_notebook.bind("<<NotebookTabChanged>>", self._trig_type_changed)
 
         # --- Action section ---
         act_frame = ttk.LabelFrame(self, text="Action")
@@ -214,18 +209,18 @@ class SimplePanel(ttk.Frame):
         self._action_box.set_binding(actions.make_binding("click", button="left"))
         self._action_box.pack(side=tk.LEFT, padx=(4, 0), fill=tk.X, expand=True)
 
-        # Click target row — only shown in image trigger mode
-        self._click_target_row = ttk.Frame(act_frame)
-        ttk.Label(self._click_target_row, text="Click target:").pack(side=tk.LEFT)
-        self._click_target_btn = ttk.Button(
-            self._click_target_row, text="Set target",
-            command=self._pick_click_target,
-        )
-        self._click_target_btn.pack(side=tk.LEFT, padx=(4, 8))
-        self._click_target_lbl = ttk.Label(
-            self._click_target_row, text="— use cursor position",
-            style="Muted.TLabel",
-        )
+        # Click target row — always visible
+        ct_row = ttk.Frame(act_frame)
+        ct_row.pack(fill=tk.X, **PAD2)
+        self._click_target_row = ct_row
+        ttk.Label(ct_row, text="Click target:").pack(side=tk.LEFT)
+        ttk.Button(ct_row, text="Set", command=self._pick_click_target,
+                   ).pack(side=tk.LEFT, padx=(4, 2))
+        ttk.Button(ct_row, text="✕", style="Icon.TButton", width=2,
+                   command=self._clear_click_target,
+                   ).pack(side=tk.LEFT, padx=(0, 8))
+        self._click_target_lbl = ttk.Label(ct_row, text="— use cursor position",
+                                            style="Muted.TLabel")
         self._click_target_lbl.pack(side=tk.LEFT)
 
         win_row = ttk.Frame(act_frame)
@@ -240,10 +235,8 @@ class SimplePanel(ttk.Frame):
 
         def _timing_row(parent, label, tooltip, var, unit="s"):
             row = ttk.Frame(parent)
-            row.pack(fill=tk.X, **PAD2)
             ttk.Label(row, text=label, width=16, anchor="w").pack(side=tk.LEFT)
-            ent = ttk.Entry(row, textvariable=var, width=7)
-            ent.pack(side=tk.LEFT)
+            ttk.Entry(row, textvariable=var, width=7).pack(side=tk.LEFT)
             ttk.Label(row, text=unit, style="Muted.TLabel").pack(side=tk.LEFT, padx=(2, 4))
             ttk.Label(row, text=tooltip, style="Muted.TLabel").pack(side=tk.LEFT)
             return row
@@ -252,12 +245,10 @@ class SimplePanel(ttk.Frame):
         self._cooldown_var = tk.StringVar(value="1.0")
         self._poll_var     = tk.StringVar(value="0.1")
 
-        # Keystroke-only row
         self._row_interval = _timing_row(
             self._timing_frame, "Fire interval:", "time between each action",
             self._interval_var,
         )
-        # Image-only rows
         self._row_cooldown = _timing_row(
             self._timing_frame, "Refire delay:", "wait after trigger fires before re-arming",
             self._cooldown_var,
@@ -279,24 +270,21 @@ class SimplePanel(ttk.Frame):
 
     # ------------------------------------------------------------------
 
-    def _trig_type_changed(self):
-        t = self._trig_type.get()
-        if t == "image":
-            self._img_panel.pack(fill=tk.X, **PAD2)
-            self._thresh_row.pack(fill=tk.X, **PAD2)
-            self._ks_panel.pack_forget()
+    def _get_trig_type(self) -> str:
+        try:
+            return "keystroke" if self._trig_notebook.index("current") == 0 else "image"
+        except Exception:
+            return "keystroke"
+
+    def _trig_type_changed(self, _event=None):
+        if self._get_trig_type() == "image":
             self._row_interval.pack_forget()
             self._row_cooldown.pack(fill=tk.X, **PAD2)
             self._row_poll.pack(fill=tk.X, **PAD2)
-            self._click_target_row.pack(fill=tk.X, **PAD2)
         else:
-            self._img_panel.pack_forget()
-            self._thresh_row.pack_forget()
-            self._ks_panel.pack(fill=tk.X, **PAD2)
             self._row_cooldown.pack_forget()
             self._row_poll.pack_forget()
             self._row_interval.pack(fill=tk.X, **PAD2)
-            self._click_target_row.pack_forget()
         self._update_start_state()
 
     def _select_region(self):
@@ -330,8 +318,12 @@ class SimplePanel(ttk.Frame):
         self._click_target = (x, y)
         self._click_target_lbl.config(text=f"x={x},  y={y}")
 
+    def _clear_click_target(self):
+        self._click_target = None
+        self._click_target_lbl.config(text="— use cursor position")
+
     def _update_start_state(self):
-        t = self._trig_type.get()
+        t = self._get_trig_type()
         if t == "image":
             ok = self._trigger_img is not None
         else:
@@ -343,13 +335,17 @@ class SimplePanel(ttk.Frame):
     def set_running(self, running: bool) -> None:
         self._start_btn.config(text="Stop" if running else "Start")
         state = tk.DISABLED if running else tk.NORMAL
-        # Lock everything except the Start/Stop button itself
-        for section in (self._img_panel, self._thresh_row, self._ks_panel,
-                        self._timing_frame, self._click_target_row):
+        # Lock trigger tabs and their content
+        nb = self._trig_notebook
+        for i in range(nb.index("end")):
+            nb.tab(i, state="disabled" if running else "normal")
+        _set_children_state(nb, state)
+        # Lock action section and timing
+        for section in (self._click_target_row, self._timing_frame):
             _set_children_state(section, state)
 
     def build_engine_config(self) -> dict:
-        t = self._trig_type.get()
+        t = self._get_trig_type()
         cfg = {
             "trigger_type":  t,
             "action":        self._action_box.get_binding(),
@@ -358,11 +354,11 @@ class SimplePanel(ttk.Frame):
             "cooldown":      _safe_float(self._cooldown_var.get(), 1.0),
             "poll_interval": _safe_float(self._poll_var.get(), 0.1),
             "threshold":     self._threshold_var.get() / 100.0,
+            "click_pos":     self._click_target,
         }
         if t == "image":
             cfg["region"]      = self._region_abs
             cfg["trigger_img"] = self._trigger_img
-            cfg["click_pos"]   = self._click_target   # None = use current cursor
         else:
             cfg["keystroke_binding"] = self._ks_binding_box.get_binding()
             cfg["keystroke_mode"]    = self._ks_mode_var.get()
@@ -370,7 +366,7 @@ class SimplePanel(ttk.Frame):
 
     def get_state(self) -> dict:
         return {
-            "trigger_type":       self._trig_type.get(),
+            "trigger_type":       self._get_trig_type(),
             "region_rel":         self._region_rel,
             "monitors":           None,   # not serialised
             "trigger_img":        self._trigger_img,
@@ -386,7 +382,8 @@ class SimplePanel(ttk.Frame):
         }
 
     def load_state(self, s: dict) -> None:
-        self._trig_type.set(s.get("trigger_type", "keystroke"))
+        trig = s.get("trigger_type", "keystroke")
+        self._trig_notebook.select(0 if trig == "keystroke" else 1)
         self._threshold_var.set(s.get("threshold", 90))
         self._interval_var.set(s.get("interval", "1.0"))
         self._cooldown_var.set(s.get("cooldown", "1.0"))

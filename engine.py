@@ -282,14 +282,15 @@ class Engine:
         start/stop/abort.  This thread just fires the action repeatedly while
         running, at the configured interval.
         """
-        cfg      = self._cfg
-        action   = cfg.get("action")
-        hwnd     = cfg.get("target_hwnd")
-        interval = cfg.get("interval", 1.0)
+        cfg       = self._cfg
+        action    = cfg.get("action")
+        hwnd      = cfg.get("target_hwnd")
+        interval  = cfg.get("interval", 1.0)
+        click_pos = cfg.get("click_pos")
 
         self._status("Active (keystroke mode)...")
         while not self._should_stop():
-            self._fire_action(action, hwnd)
+            self._fire_action(action, hwnd, click_pos=click_pos)
             self._abort_event.wait(interval)
 
         if not self._should_stop():
