@@ -74,6 +74,8 @@ class HotkeyManager:
         self._lock    = threading.Lock()
         # (frozenset_mods, vk) -> (callback, name)
         self._bindings: dict[tuple, tuple[Callable, str]] = {}
+        # vk -> (callback, name)  — release bindings match by VK only
+        self._release_bindings: dict[int, tuple[Callable, str]] = {}
         self._pressed_mods: set[str] = set()
         self._listener: Optional[kb.Listener] = None
         self._running = False
@@ -98,9 +100,19 @@ class HotkeyManager:
         with self._lock:
             self._bindings.pop(key, None)
 
+    def register_release(self, vk: int, callback: Callable, name: str = "") -> None:
+        """Register a callback fired when *vk* is released (mods ignored)."""
+        with self._lock:
+            self._release_bindings[vk] = (callback, name)
+
+    def unregister_release(self, vk: int) -> None:
+        with self._lock:
+            self._release_bindings.pop(vk, None)
+
     def clear(self) -> None:
         with self._lock:
             self._bindings.clear()
+            self._release_bindings.clear()
 
     def has_conflict(self, mods: list[str], vk: int) -> bool:
         key = (frozenset(m.lower() for m in mods), vk)
@@ -164,6 +176,19 @@ class HotkeyManager:
         mod = _KEY_TO_MOD.get(key)
         if mod:
             self._pressed_mods.discard(mod)
+            return
+
+        if not self._running:
+            return
+        vk = _pynput_to_vk(key)
+        if not vk:
+            return
+        with self._lock:
+            entry = self._release_bindings.get(vk)
+        if entry:
+            callback, _ = entry
+            t = threading.Thread(target=callback, daemon=True)
+            t.start()
 
 
 # ---------------------------------------------------------------------------

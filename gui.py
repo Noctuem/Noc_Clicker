@@ -155,7 +155,8 @@ class SimplePanel(ttk.Frame):
         self._region_preview = RegionPreview(self._img_panel)
         self._region_preview.pack(side=tk.LEFT)
 
-        thresh_row = ttk.Frame(trig_frame)
+        self._thresh_row = ttk.Frame(trig_frame)
+        thresh_row = self._thresh_row
         thresh_row.pack(fill=tk.X, **PAD2)
         ttk.Label(thresh_row, text="Similarity:").pack(side=tk.LEFT)
         self._threshold_var = tk.IntVar(value=90)
@@ -174,6 +175,7 @@ class SimplePanel(ttk.Frame):
         ks_row.pack(fill=tk.X, **PAD2)
         ttk.Label(ks_row, text="Key:").pack(side=tk.LEFT)
         self._ks_binding_box = BindingBox(ks_row, allow_mouse=False,
+                                           on_change=lambda _: self._update_start_state(),
                                            theme_manager=app.theme)
         self._ks_binding_box.pack(side=tk.LEFT, padx=(4, 12), fill=tk.X, expand=True)
 
@@ -238,9 +240,11 @@ class SimplePanel(ttk.Frame):
         t = self._trig_type.get()
         if t == "image":
             self._img_panel.pack(fill=tk.X, **PAD2)
+            self._thresh_row.pack(fill=tk.X, **PAD2)
             self._ks_panel.pack_forget()
         else:
             self._img_panel.pack_forget()
+            self._thresh_row.pack_forget()
             self._ks_panel.pack(fill=tk.X, **PAD2)
         self._update_start_state()
 
@@ -533,47 +537,15 @@ class HotkeysPanel(ttk.LabelFrame):
                                       theme_manager=self._app.theme)
         self._start_box.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 0))
 
-        row2 = ttk.Frame(self)
-        row2.pack(fill=tk.X, **PAD2)
-        ttk.Label(row2, text="Abort:", width=12, anchor="w").pack(side=tk.LEFT)
-        self._abort_box = BindingBox(row2, allow_mouse=False,
-                                      on_change=self._on_abort_change,
-                                      theme_manager=self._app.theme)
-        self._abort_box.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 0))
-
-        self._conflict_lbl = ttk.Label(self, text="", style="Error.TLabel")
-        self._conflict_lbl.pack(**PAD2)
-
     def _on_start_change(self, b: dict) -> None:
         self._app.update_start_stop_hotkey(b)
-        self._check_conflict()
-
-    def _on_abort_change(self, b: dict) -> None:
-        self._app.update_abort_hotkey(b)
-        self._check_conflict()
-
-    def _check_conflict(self) -> None:
-        b1 = self._start_box.get_binding()
-        b2 = self._abort_box.get_binding()
-        if b1 and b2 and b1.get("type") == "key" and b2.get("type") == "key":
-            if (b1.get("vk") == b2.get("vk") and
-                    set(b1.get("mods", [])) == set(b2.get("mods", []))):
-                self._conflict_lbl.config(
-                    text="⚠ Start/Stop and Abort binds are identical")
-                return
-        self._conflict_lbl.config(text="")
 
     def get_state(self) -> dict:
-        return {
-            "start_stop": self._start_box.get_binding(),
-            "abort":      self._abort_box.get_binding(),
-        }
+        return {"start_stop": self._start_box.get_binding()}
 
     def load_state(self, s: dict) -> None:
         self._start_box.set_binding(s.get("start_stop"))
-        self._abort_box.set_binding(s.get("abort"))
         self._app.update_start_stop_hotkey(s.get("start_stop"))
-        self._app.update_abort_hotkey(s.get("abort"))
 
 
 # ===========================================================================
@@ -629,7 +601,7 @@ class App:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("Noc Clicker")
-        self.root.resizable(False, False)
+        self.root.resizable(True, True)
 
         self.theme   = ThemeManager(root)
         self._engine = eng.Engine(
@@ -643,7 +615,6 @@ class App:
         self._ks_mode:       str = "toggle"
 
         self._start_stop_binding: Optional[dict] = None
-        self._abort_binding:      Optional[dict] = None
 
         self._hotkeys.start()
         self._build_ui()
@@ -697,8 +668,8 @@ class App:
         ttk.Label(footer, text="created by noctuem_",
                   style="Muted.TLabel", font=(f, 7)).pack(side=tk.RIGHT)
 
-        self.root.minsize(420, 520)
-        self.root.geometry("440x720")
+        self.root.minsize(460, 580)
+        self.root.geometry("480x780")
 
     def _build_menu(self):
         menubar = tk.Menu(self.root)
@@ -764,20 +735,6 @@ class App:
                 name="start_stop",
             )
 
-    def update_abort_hotkey(self, b: Optional[dict]) -> None:
-        if self._abort_binding:
-            self._hotkeys.unregister(
-                self._abort_binding.get("mods", []),
-                self._abort_binding.get("vk", 0),
-            )
-        self._abort_binding = b
-        if b and b.get("type") == "key" and b.get("vk"):
-            self._hotkeys.register(
-                b.get("mods", []), b["vk"],
-                callback=lambda: self.root.after(0, self._engine.abort),
-                name="abort",
-            )
-
     # ------------------------------------------------------------------
     # Start / Stop
     # ------------------------------------------------------------------
@@ -831,49 +788,52 @@ class App:
         hwnd      = cfg.get("target_hwnd")
         interval  = cfg.get("interval", 1.0)
 
-        def on_hotkey():
+        fire_cfg = {
+            "trigger_type": "keystroke",
+            "action": action,
+            "target_hwnd": hwnd,
+            "interval": interval,
+            "cooldown": 0.0,
+        }
+
+        def on_press():
             if mode == "toggle":
                 if self._ks_running:
                     self._ks_running = False
                     self._engine.stop()
+                    self.root.after(0, lambda: self._on_status("Keystroke trigger armed (paused)"))
                 else:
                     self._ks_running = True
-                    fire_cfg = {
-                        "trigger_type": "keystroke",
-                        "action": action,
-                        "target_hwnd": hwnd,
-                        "interval": interval,
-                        "cooldown": 0.0,
-                    }
                     self._engine.configure_simple(fire_cfg)
                     self._engine.start()
-            else:  # hold mode: press = start, release = stop
+            else:  # hold — start on press
                 if not self._ks_running:
                     self._ks_running = True
-                    fire_cfg = {
-                        "trigger_type": "keystroke",
-                        "action": action,
-                        "target_hwnd": hwnd,
-                        "interval": interval,
-                        "cooldown": 0.0,
-                    }
                     self._engine.configure_simple(fire_cfg)
                     self._engine.start()
 
+        def on_release():
+            if mode == "hold" and self._ks_running:
+                self._ks_running = False
+                self._engine.stop()
+                self.root.after(0, lambda: self._on_status("Keystroke trigger armed"))
+
         self._hotkeys.register(
             binding.get("mods", []), binding["vk"],
-            callback=on_hotkey,
+            callback=on_press,
             name="ks_trigger",
         )
+        if mode == "hold":
+            self._hotkeys.register_release(binding["vk"], callback=on_release, name="ks_release")
+
         self._set_running(True)
         self._on_status("Keystroke trigger armed")
 
     def _cleanup_keystroke_mode(self) -> None:
         if self._ks_binding:
-            self._hotkeys.unregister(
-                self._ks_binding.get("mods", []),
-                self._ks_binding.get("vk", 0),
-            )
+            vk = self._ks_binding.get("vk", 0)
+            self._hotkeys.unregister(self._ks_binding.get("mods", []), vk)
+            self._hotkeys.unregister_release(vk)
             self._ks_binding = None
         self._ks_running = False
 
