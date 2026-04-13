@@ -201,9 +201,17 @@ def empty_binding() -> dict:
 # Execute
 # ---------------------------------------------------------------------------
 
-def execute(binding: Optional[dict], target_hwnd: Optional[int] = None) -> None:
+def execute(
+    binding: Optional[dict],
+    target_hwnd: Optional[int] = None,
+    click_pos: Optional[tuple] = None,
+) -> None:
     """
     Fire the action described by *binding*.
+
+    click_pos : (x, y) absolute screen coordinates.  When given for a click
+                action the cursor is teleported there, the click is sent, then
+                the cursor is restored to its previous position.
 
     If *target_hwnd* is given:
       - Save current foreground window
@@ -224,7 +232,11 @@ def execute(binding: Optional[dict], target_hwnd: Optional[int] = None) -> None:
 
     try:
         if binding["type"] == "click":
-            _do_click(binding.get("button", "left"))
+            btn = binding.get("button", "left")
+            if click_pos:
+                _do_click_at(btn, click_pos[0], click_pos[1])
+            else:
+                _do_click(btn)
         else:
             _do_key(binding.get("mods", []), binding.get("vk", 0))
     finally:
@@ -241,6 +253,18 @@ def _do_click(button: str) -> None:
     }
     down_flag, up_flag = pairs.get(button, pairs["left"])
     _send_inputs([_mouse_input(down_flag), _mouse_input(up_flag)])
+
+
+def _do_click_at(button: str, x: int, y: int) -> None:
+    """Teleport cursor to (x, y), click, then restore cursor position."""
+    pt = wintypes.POINT()
+    ctypes.windll.user32.GetCursorPos(ctypes.byref(pt))
+    old_x, old_y = pt.x, pt.y
+    ctypes.windll.user32.SetCursorPos(x, y)
+    time.sleep(0.01)
+    _do_click(button)
+    time.sleep(0.01)
+    ctypes.windll.user32.SetCursorPos(old_x, old_y)
 
 
 def _do_key(mods: list[str], vk: int) -> None:

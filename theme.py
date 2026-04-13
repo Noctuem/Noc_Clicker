@@ -477,5 +477,7 @@ class ThemeManager:
             background=p["bg_primary"],
         )
 
-        # Root window background
+        # Root window and canvas backgrounds
         self._root.configure(bg=p["bg_primary"])
+        self._root.option_add("*Canvas.background", p["bg_primary"])
+        self._root.option_add("*Canvas.highlightThickness", "0")

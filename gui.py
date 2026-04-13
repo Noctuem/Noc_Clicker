@@ -41,7 +41,7 @@ import engine as eng
 import profile as prof
 from assets import FONT_FAMILY
 import hotkey as hk
-from region_selector import RegionSelector
+from region_selector import RegionSelector, PointSelector
 from theme import ThemeManager
 from widgets import (
     BindingBox, ColorSwatch, ColorPickerDialog,
@@ -137,10 +137,11 @@ class SimplePanel(ttk.Frame):
     def __init__(self, parent, app: "App", **kw):
         super().__init__(parent, **kw)
         self._app = app
-        self._region_abs: Optional[dict] = None
-        self._region_rel: Optional[dict] = None
-        self._monitors:   Optional[list] = None
-        self._trigger_img: Optional[Image.Image] = None
+        self._region_abs:  Optional[dict]          = None
+        self._region_rel:  Optional[dict]          = None
+        self._monitors:    Optional[list]          = None
+        self._trigger_img: Optional[Image.Image]   = None
+        self._click_target: Optional[tuple]        = None   # (x, y) abs coords
         self._build()
 
     def _build(self):
@@ -151,7 +152,7 @@ class SimplePanel(ttk.Frame):
         trig_frame = ttk.LabelFrame(self, text="Trigger")
         trig_frame.pack(fill=tk.X, **PAD)
 
-        self._trig_type = tk.StringVar(value="image")
+        self._trig_type = tk.StringVar(value="keystroke")
         type_row = ttk.Frame(trig_frame)
         type_row.pack(fill=tk.X, **PAD2)
         ttk.Radiobutton(type_row, text="Image Region",
@@ -213,6 +214,20 @@ class SimplePanel(ttk.Frame):
         self._action_box.set_binding(actions.make_binding("click", button="left"))
         self._action_box.pack(side=tk.LEFT, padx=(4, 0), fill=tk.X, expand=True)
 
+        # Click target row — only shown in image trigger mode
+        self._click_target_row = ttk.Frame(act_frame)
+        ttk.Label(self._click_target_row, text="Click target:").pack(side=tk.LEFT)
+        self._click_target_btn = ttk.Button(
+            self._click_target_row, text="Set target",
+            command=self._pick_click_target,
+        )
+        self._click_target_btn.pack(side=tk.LEFT, padx=(4, 8))
+        self._click_target_lbl = ttk.Label(
+            self._click_target_row, text="— use cursor position",
+            style="Muted.TLabel",
+        )
+        self._click_target_lbl.pack(side=tk.LEFT)
+
         win_row = ttk.Frame(act_frame)
         win_row.pack(fill=tk.X, **PAD2)
         ttk.Label(win_row, text="Window:").pack(side=tk.LEFT)
@@ -273,6 +288,7 @@ class SimplePanel(ttk.Frame):
             self._row_interval.pack_forget()
             self._row_cooldown.pack(fill=tk.X, **PAD2)
             self._row_poll.pack(fill=tk.X, **PAD2)
+            self._click_target_row.pack(fill=tk.X, **PAD2)
         else:
             self._img_panel.pack_forget()
             self._thresh_row.pack_forget()
@@ -280,6 +296,7 @@ class SimplePanel(ttk.Frame):
             self._row_cooldown.pack_forget()
             self._row_poll.pack_forget()
             self._row_interval.pack(fill=tk.X, **PAD2)
+            self._click_target_row.pack_forget()
         self._update_start_state()
 
     def _select_region(self):
@@ -302,6 +319,17 @@ class SimplePanel(ttk.Frame):
         self._region_preview.set_image(self._trigger_img)
         self._update_start_state()
 
+    def _pick_click_target(self):
+        self._app.root.withdraw()
+        self._app.root.after(200, lambda: PointSelector(on_select=self._on_click_target_selected))
+
+    def _on_click_target_selected(self, x, y):
+        self._app.root.deiconify()
+        if x is None:
+            return
+        self._click_target = (x, y)
+        self._click_target_lbl.config(text=f"x={x},  y={y}")
+
     def _update_start_state(self):
         t = self._trig_type.get()
         if t == "image":
@@ -317,7 +345,7 @@ class SimplePanel(ttk.Frame):
         state = tk.DISABLED if running else tk.NORMAL
         # Lock everything except the Start/Stop button itself
         for section in (self._img_panel, self._thresh_row, self._ks_panel,
-                        self._timing_frame):
+                        self._timing_frame, self._click_target_row):
             _set_children_state(section, state)
 
     def build_engine_config(self) -> dict:
@@ -334,6 +362,7 @@ class SimplePanel(ttk.Frame):
         if t == "image":
             cfg["region"]      = self._region_abs
             cfg["trigger_img"] = self._trigger_img
+            cfg["click_pos"]   = self._click_target   # None = use current cursor
         else:
             cfg["keystroke_binding"] = self._ks_binding_box.get_binding()
             cfg["keystroke_mode"]    = self._ks_mode_var.get()
@@ -353,10 +382,11 @@ class SimplePanel(ttk.Frame):
             "poll_interval":      self._poll_var.get(),
             "keystroke_binding":  self._ks_binding_box.get_binding(),
             "keystroke_mode":     self._ks_mode_var.get(),
+            "click_target":       list(self._click_target) if self._click_target else None,
         }
 
     def load_state(self, s: dict) -> None:
-        self._trig_type.set(s.get("trigger_type", "image"))
+        self._trig_type.set(s.get("trigger_type", "keystroke"))
         self._threshold_var.set(s.get("threshold", 90))
         self._interval_var.set(s.get("interval", "1.0"))
         self._cooldown_var.set(s.get("cooldown", "1.0"))
@@ -374,6 +404,10 @@ class SimplePanel(ttk.Frame):
         if img:
             self._trigger_img = img
             self._region_preview.set_image(img)
+        ct = s.get("click_target")
+        if ct:
+            self._click_target = tuple(ct)
+            self._click_target_lbl.config(text=f"x={ct[0]},  y={ct[1]}")
         self._trig_type_changed()
         self._update_start_state()
 

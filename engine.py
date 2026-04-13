@@ -198,9 +198,15 @@ class Engine:
     def _should_stop(self) -> bool:
         return self._abort_event.is_set()
 
-    def _fire_action(self, action: dict, hwnd: Optional[int], label: str = "") -> None:
+    def _fire_action(
+        self,
+        action: dict,
+        hwnd: Optional[int],
+        label: str = "",
+        click_pos: Optional[tuple] = None,
+    ) -> None:
         with self._action_lock:
-            actions.execute(action, hwnd)
+            actions.execute(action, hwnd, click_pos=click_pos)
         self._log(f"Fired: {actions.binding_label(action)}{f'  [{label}]' if label else ''}")
 
     def _wait_for_trigger(
@@ -253,13 +259,14 @@ class Engine:
         action        = cfg.get("action")
         hwnd          = cfg.get("target_hwnd")
         cooldown      = cfg.get("cooldown", 1.0)
+        click_pos     = cfg.get("click_pos")  # (x, y) or None
 
         self._status("Monitoring...")
         while not self._should_stop():
             matched = self._wait_for_trigger(region, trigger_img, threshold, poll_interval)
             if not matched:
                 break
-            self._fire_action(action, hwnd)
+            self._fire_action(action, hwnd, click_pos=click_pos)
             self._status("Cooldown...")
             self._abort_event.wait(cooldown)
             if not self._should_stop():

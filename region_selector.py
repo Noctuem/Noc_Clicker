@@ -84,7 +84,7 @@ class RegionSelector:
             self.canvas.delete(self.rect_id)
         self.rect_id = self.canvas.create_rectangle(
             self.start_x, self.start_y, self.start_x, self.start_y,
-            outline="#cba6f7", width=2,
+            outline="#cc2b2b", width=2,
         )
 
     def _on_drag(self, event):
@@ -115,3 +115,59 @@ class RegionSelector:
     def _on_cancel(self, event):
         self.root.destroy()
         self.on_select(None, None, None)
+
+
+class PointSelector:
+    """
+    Full-screen crosshair overlay; user clicks once to set a target point.
+
+    Callback: on_select(x: int, y: int)  on success
+              on_select(None, None)        on cancel
+    """
+
+    def __init__(self, on_select: Callable):
+        self.on_select = on_select
+
+        with mss.mss() as sct:
+            virtual = sct.monitors[0]
+            self.offset_x = virtual["left"]
+            self.offset_y = virtual["top"]
+            self.total_w  = virtual["width"]
+            self.total_h  = virtual["height"]
+            screenshot    = sct.grab(virtual)
+            img           = Image.frombytes("RGB", screenshot.size, screenshot.rgb)
+
+        dimmed = ImageEnhance.Brightness(img).enhance(0.45)
+
+        self.root = tk.Toplevel()
+        self.root.attributes("-topmost", True)
+        self.root.overrideredirect(True)
+        self.root.geometry(
+            f"{self.total_w}x{self.total_h}+{self.offset_x}+{self.offset_y}"
+        )
+
+        self.tk_image = ImageTk.PhotoImage(dimmed)
+        self.canvas = tk.Canvas(
+            self.root, width=self.total_w, height=self.total_h,
+            highlightthickness=0, cursor="crosshair",
+        )
+        self.canvas.pack(fill=tk.BOTH, expand=True)
+        self.canvas.create_image(0, 0, anchor=tk.NW, image=self.tk_image)
+        self.canvas.create_text(
+            self.total_w // 2, 20,
+            text="Click to set click target.  Esc to cancel.",
+            fill="#e6e6e6", font=("Consolas", 13),
+        )
+
+        self.canvas.bind("<ButtonPress-1>", self._on_click)
+        self.root.bind("<Escape>", self._on_cancel)
+
+    def _on_click(self, event):
+        x = event.x + self.offset_x
+        y = event.y + self.offset_y
+        self.root.destroy()
+        self.on_select(x, y)
+
+    def _on_cancel(self, _event):
+        self.root.destroy()
+        self.on_select(None, None)
