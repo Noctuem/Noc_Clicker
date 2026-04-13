@@ -53,6 +53,20 @@ PAD2 = {"padx": 4, "pady": 2}
 THUMB = (148, 100)
 
 
+# ---------------------------------------------------------------------------
+# Utility: recursively enable/disable all widgets in a container
+# ---------------------------------------------------------------------------
+
+def _set_children_state(widget, state: str) -> None:
+    """Recursively set the state of a widget and all its descendants."""
+    try:
+        widget.config(state=state)
+    except tk.TclError:
+        pass
+    for child in widget.winfo_children():
+        _set_children_state(child, state)
+
+
 # ===========================================================================
 # Theme editor dialog
 # ===========================================================================
@@ -204,25 +218,37 @@ class SimplePanel(ttk.Frame):
         self._window_dd.pack(side=tk.LEFT, padx=(4, 0), fill=tk.X, expand=True)
 
         # --- Timing section ---
-        timing_frame = ttk.LabelFrame(self, text="Timing")
-        timing_frame.pack(fill=tk.X, **PAD)
+        self._timing_frame = ttk.LabelFrame(self, text="Timing")
+        self._timing_frame.pack(fill=tk.X, **PAD)
 
-        def _timing_row(parent, label, var, default, unit="s"):
+        def _timing_row(parent, label, tooltip, var, unit="s"):
             row = ttk.Frame(parent)
             row.pack(fill=tk.X, **PAD2)
-            ttk.Label(row, text=label, width=14, anchor="w").pack(side=tk.LEFT)
+            ttk.Label(row, text=label, width=16, anchor="w").pack(side=tk.LEFT)
             ent = ttk.Entry(row, textvariable=var, width=7)
             ent.pack(side=tk.LEFT)
-            ttk.Label(row, text=unit, style="Muted.TLabel").pack(side=tk.LEFT, padx=(2, 0))
-            return ent
+            ttk.Label(row, text=unit, style="Muted.TLabel").pack(side=tk.LEFT, padx=(2, 4))
+            ttk.Label(row, text=tooltip, style="Muted.TLabel").pack(side=tk.LEFT)
+            return row
 
-        self._interval_var  = tk.StringVar(value="1.0")
-        self._cooldown_var  = tk.StringVar(value="1.0")
-        self._poll_var      = tk.StringVar(value="0.1")
+        self._interval_var = tk.StringVar(value="1.0")
+        self._cooldown_var = tk.StringVar(value="1.0")
+        self._poll_var     = tk.StringVar(value="0.1")
 
-        _timing_row(timing_frame, "Interval:",     self._interval_var,  "1.0")
-        _timing_row(timing_frame, "Cooldown:",     self._cooldown_var,  "1.0")
-        _timing_row(timing_frame, "Poll interval:", self._poll_var,     "0.1")
+        # Keystroke-only row
+        self._row_interval = _timing_row(
+            self._timing_frame, "Fire interval:", "time between each action",
+            self._interval_var,
+        )
+        # Image-only rows
+        self._row_cooldown = _timing_row(
+            self._timing_frame, "Refire delay:", "wait after trigger fires before re-arming",
+            self._cooldown_var,
+        )
+        self._row_poll = _timing_row(
+            self._timing_frame, "Scan rate:", "how often the screen is checked",
+            self._poll_var,
+        )
 
         # --- Start / Stop ---
         self._start_btn = ttk.Button(self, text="Start",
@@ -242,10 +268,16 @@ class SimplePanel(ttk.Frame):
             self._img_panel.pack(fill=tk.X, **PAD2)
             self._thresh_row.pack(fill=tk.X, **PAD2)
             self._ks_panel.pack_forget()
+            self._row_interval.pack_forget()
+            self._row_cooldown.pack(fill=tk.X, **PAD2)
+            self._row_poll.pack(fill=tk.X, **PAD2)
         else:
             self._img_panel.pack_forget()
             self._thresh_row.pack_forget()
             self._ks_panel.pack(fill=tk.X, **PAD2)
+            self._row_cooldown.pack_forget()
+            self._row_poll.pack_forget()
+            self._row_interval.pack(fill=tk.X, **PAD2)
         self._update_start_state()
 
     def _select_region(self):
@@ -280,6 +312,11 @@ class SimplePanel(ttk.Frame):
 
     def set_running(self, running: bool) -> None:
         self._start_btn.config(text="Stop" if running else "Start")
+        state = tk.DISABLED if running else tk.NORMAL
+        # Lock everything except the Start/Stop button itself
+        for section in (self._img_panel, self._thresh_row, self._ks_panel,
+                        self._timing_frame):
+            _set_children_state(section, state)
 
     def build_engine_config(self) -> dict:
         t = self._trig_type.get()
@@ -358,7 +395,8 @@ class AdvancedPanel(ttk.Frame):
         app = self._app
 
         # --- Primary trigger ---
-        pt_frame = ttk.LabelFrame(self, text="Primary Trigger")
+        self._pt_frame = ttk.LabelFrame(self, text="Primary Trigger")
+        pt_frame = self._pt_frame
         pt_frame.pack(fill=tk.X, **PAD)
 
         pt_row = ttk.Frame(pt_frame)
@@ -389,7 +427,8 @@ class AdvancedPanel(ttk.Frame):
         ttk.Label(poll_row, text="s", style="Muted.TLabel").pack(side=tk.LEFT, padx=(2, 0))
 
         # --- Mode ---
-        mode_frame = ttk.LabelFrame(self, text="Mode")
+        self._mode_frame = ttk.LabelFrame(self, text="Mode")
+        mode_frame = self._mode_frame
         mode_frame.pack(fill=tk.X, **PAD)
 
         mode_row = ttk.Frame(mode_frame)
@@ -472,6 +511,9 @@ class AdvancedPanel(ttk.Frame):
 
     def set_running(self, running: bool) -> None:
         self._start_btn.config(text="Stop" if running else "Start")
+        state = tk.DISABLED if running else tk.NORMAL
+        for section in (self._pt_frame, self._mode_frame, self._target_list):
+            _set_children_state(section, state)
 
     def build_engine_config(self) -> dict:
         mode    = self._adv_mode_var.get()
@@ -615,6 +657,7 @@ class App:
         self._ks_mode:       str = "toggle"
 
         self._start_stop_binding: Optional[dict] = None
+        self._app_running: bool = False   # true whenever automation is active
 
         self._hotkeys.start()
         self._build_ui()
@@ -740,7 +783,7 @@ class App:
     # ------------------------------------------------------------------
 
     def toggle_start_stop(self) -> None:
-        if self._engine.is_running:
+        if self._app_running:
             self._stop()
         else:
             self._start()
@@ -749,7 +792,6 @@ class App:
         tab = self._notebook.index(self._notebook.select())
         if tab == 0:
             cfg = self._simple_panel.build_engine_config()
-            # Keystroke trigger: handled specially
             if cfg.get("trigger_type") == "keystroke":
                 self._start_keystroke_mode(cfg)
                 return
@@ -767,6 +809,7 @@ class App:
         self._set_running(False)
 
     def _set_running(self, running: bool) -> None:
+        self._app_running = running
         self._simple_panel.set_running(running)
         self._advanced_panel.set_running(running)
 
