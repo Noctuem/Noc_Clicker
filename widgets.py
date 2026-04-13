@@ -52,12 +52,14 @@ class BindingBox(ttk.Frame):
         allow_mouse: bool = False,
         on_change: Optional[Callable] = None,
         theme_manager=None,
+        hotkey_manager=None,
         **kw,
     ):
         super().__init__(parent, style="Card.TFrame", **kw)
         self._allow_mouse   = allow_mouse
         self._on_change     = on_change
         self._tm            = theme_manager
+        self._hm            = hotkey_manager
         self._binding: Optional[dict] = None
         self._listening     = False
         self._capture: Optional[hk.BindingCapture] = None
@@ -85,6 +87,9 @@ class BindingBox(ttk.Frame):
     def _start_listen(self, _event=None) -> None:
         if self._listening:
             return
+        # Pause hotkey manager so the existing binding doesn't fire while capturing
+        if self._hm:
+            self._hm.pause()
         self._listening = True
         self._var.set("Press a key or click…" if self._allow_mouse else "Press a key…")
 
@@ -92,7 +97,7 @@ class BindingBox(ttk.Frame):
             self._bind_mouse()
 
         self._capture = hk.BindingCapture()
-        self._capture.start(self._on_key_captured)
+        self._capture.start(self._on_key_captured, on_cancel=self._on_capture_cancelled)
 
     def _bind_mouse(self) -> None:
         def make_handler(btn):
@@ -122,17 +127,34 @@ class BindingBox(ttk.Frame):
         # Schedule UI update on main thread
         self.after(0, lambda: self._apply_binding(b))
 
+    def _on_capture_cancelled(self) -> None:
+        """Called (from daemon thread) when Escape was pressed during capture."""
+        self.after(0, self._restore_after_cancel)
+
+    def _restore_after_cancel(self) -> None:
+        """Restore label to previous binding and resume hotkeys."""
+        self._listening = False
+        self._unbind_mouse()
+        self._capture = None
+        self._var.set(actions.binding_label(self._binding))  # restores "Unbound" if None
+        if self._hm:
+            self._hm.resume()
+
     def _cancel_capture(self) -> None:
         if self._capture:
             self._capture.cancel()
             self._capture = None
         self._unbind_mouse()
         self._listening = False
+        if self._hm:
+            self._hm.resume()
 
     def _apply_binding(self, b: dict) -> None:
         self._listening = False
         self._binding   = b
         self._var.set(actions.binding_label(b))
+        if self._hm:
+            self._hm.resume()
         if self._on_change:
             self._on_change(b)
 
@@ -494,6 +516,7 @@ class TargetItem(ttk.Frame):
         on_delete:    Callable,
         on_change:    Callable,      # called whenever anything changes
         theme_manager=None,
+        hotkey_manager=None,
         **kw,
     ):
         super().__init__(parent, style="Card.TFrame", **kw)
@@ -505,6 +528,7 @@ class TargetItem(ttk.Frame):
         self._on_delete  = on_delete
         self._on_change  = on_change
         self._tm         = theme_manager
+        self._hm         = hotkey_manager
 
         self._build()
 
@@ -586,6 +610,7 @@ class TargetItem(ttk.Frame):
             act_frame, allow_mouse=True,
             on_change=lambda _: self._on_change(),
             theme_manager=self._tm,
+            hotkey_manager=self._hm,
         )
         self._binding_box.pack(side=tk.LEFT, padx=(4, 0), fill=tk.X, expand=True)
 
@@ -693,12 +718,14 @@ class TargetList(ttk.Frame):
         adv_mode: str = "sequence",
         on_change: Optional[Callable] = None,
         theme_manager=None,
+        hotkey_manager=None,
         **kw,
     ):
         super().__init__(parent, **kw)
         self._adv_mode   = adv_mode
         self._on_change  = on_change
         self._tm         = theme_manager
+        self._hm         = hotkey_manager
         self._items: list[TargetItem] = []
         self._next_id    = 1
 
@@ -756,6 +783,7 @@ class TargetList(ttk.Frame):
             on_delete=self._delete,
             on_change=self._changed,
             theme_manager=self._tm,
+            hotkey_manager=self._hm,
         )
         item.pack(fill=tk.X, padx=4, pady=3)
         self._items.append(item)

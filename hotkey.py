@@ -79,6 +79,7 @@ class HotkeyManager:
         self._pressed_mods: set[str] = set()
         self._listener: Optional[kb.Listener] = None
         self._running = False
+        self._paused  = False
 
     # ------------------------------------------------------------------
     # Registration
@@ -113,6 +114,15 @@ class HotkeyManager:
         with self._lock:
             self._bindings.clear()
             self._release_bindings.clear()
+
+    def pause(self) -> None:
+        """Temporarily suppress all hotkey callbacks (used during key capture)."""
+        self._paused = True
+
+    def resume(self) -> None:
+        """Re-enable hotkey callbacks after capture ends."""
+        self._paused = False
+        self._pressed_mods.clear()  # avoid phantom modifier state after capture
 
     def has_conflict(self, mods: list[str], vk: int) -> bool:
         key = (frozenset(m.lower() for m in mods), vk)
@@ -157,6 +167,9 @@ class HotkeyManager:
         mod = _KEY_TO_MOD.get(key)
         if mod:
             self._pressed_mods.add(mod)
+            return
+
+        if self._paused:
             return
 
         vk = _pynput_to_vk(key)
@@ -204,13 +217,15 @@ class BindingCapture:
     """
 
     def __init__(self) -> None:
-        self._listener: Optional[kb.Listener] = None
-        self._callback: Optional[Callable] = None
+        self._listener:  Optional[kb.Listener] = None
+        self._callback:  Optional[Callable] = None
+        self._on_cancel: Optional[Callable] = None
         self._mods: set[str] = set()
         self._done = False
 
-    def start(self, callback: Callable) -> None:
-        self._callback = callback
+    def start(self, callback: Callable, on_cancel: Optional[Callable] = None) -> None:
+        self._callback  = callback
+        self._on_cancel = on_cancel
         self._mods.clear()
         self._done = False
         self._listener = kb.Listener(
@@ -235,7 +250,12 @@ class BindingCapture:
             return
         # Escape cancels
         if key == kb.Key.esc:
-            self.cancel()
+            self._done = True
+            if self._listener:
+                self._listener.stop()
+                self._listener = None
+            if self._on_cancel:
+                threading.Thread(target=self._on_cancel, daemon=True).start()
             return
 
         vk = _pynput_to_vk(key)

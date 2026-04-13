@@ -190,7 +190,8 @@ class SimplePanel(ttk.Frame):
         ttk.Label(ks_row, text="Key:").pack(side=tk.LEFT)
         self._ks_binding_box = BindingBox(ks_row, allow_mouse=False,
                                            on_change=lambda _: self._update_start_state(),
-                                           theme_manager=app.theme)
+                                           theme_manager=app.theme,
+                                           hotkey_manager=app._hotkeys)
         self._ks_binding_box.pack(side=tk.LEFT, padx=(4, 12), fill=tk.X, expand=True)
 
         self._ks_mode_var = tk.StringVar(value="toggle")
@@ -207,7 +208,8 @@ class SimplePanel(ttk.Frame):
         act_row.pack(fill=tk.X, **PAD2)
         ttk.Label(act_row, text="Action:").pack(side=tk.LEFT)
         self._action_box = BindingBox(act_row, allow_mouse=True,
-                                       theme_manager=app.theme)
+                                      theme_manager=app.theme,
+                                      hotkey_manager=app._hotkeys)
         self._action_box.set_binding(actions.make_binding("click", button="left"))
         self._action_box.pack(side=tk.LEFT, padx=(4, 0), fill=tk.X, expand=True)
 
@@ -460,6 +462,7 @@ class AdvancedPanel(ttk.Frame):
             adv_mode="sequence",
             on_change=self._on_targets_changed,
             theme_manager=app.theme,
+            hotkey_manager=app._hotkeys,
         )
         self._target_list.pack(fill=tk.BOTH, expand=True)
 
@@ -576,7 +579,8 @@ class HotkeysPanel(ttk.LabelFrame):
         ttk.Label(row1, text="Start / Stop:", width=12, anchor="w").pack(side=tk.LEFT)
         self._start_box = BindingBox(row1, allow_mouse=False,
                                       on_change=self._on_start_change,
-                                      theme_manager=self._app.theme)
+                                      theme_manager=self._app.theme,
+                                      hotkey_manager=self._app._hotkeys)
         self._start_box.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 0))
 
     def _on_start_change(self, b: dict) -> None:
