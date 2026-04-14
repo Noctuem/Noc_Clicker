@@ -335,11 +335,11 @@ class SimplePanel(ttk.Frame):
     def set_running(self, running: bool) -> None:
         self._start_btn.config(text="Stop" if running else "Start")
         state = tk.DISABLED if running else tk.NORMAL
-        # Lock trigger tabs and their content
+        # Disable tab switching while running; lock content inside each tab frame
         nb = self._trig_notebook
         for i in range(nb.index("end")):
             nb.tab(i, state="disabled" if running else "normal")
-        _set_children_state(nb, state)
+            _set_children_state(nb.nametowidget(nb.tabs()[i]), state)
         # Lock action section and timing
         for section in (self._click_target_row, self._timing_frame):
             _set_children_state(section, state)
@@ -746,8 +746,8 @@ class App:
         ttk.Label(footer, text="created by noctuem_",
                   style="Muted.TLabel", font=(f, 7)).pack(side=tk.RIGHT)
 
-        self.root.minsize(460, 580)
-        self.root.geometry("480x780")
+        self.root.minsize(920, 1160)
+        self.root.geometry("960x1560")
 
     def _build_menu(self):
         menubar = tk.Menu(self.root)
