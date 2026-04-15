@@ -1,3 +1,9 @@
+# Disclaimer
+
+**!!!This is a work in progress!!!**
+Many features are not working or broken
+AI was used in making this project
+
 # Noc Clicker
 
 An image-triggered auto-clicker and key-sender for Windows.  Watch a region of
